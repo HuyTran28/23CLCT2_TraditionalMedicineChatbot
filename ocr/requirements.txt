@@ -2,3 +2,13 @@ paddleocr
 opencv-python
 pdf2docx
 python-docx
+PyMuPDF
+numpy<2.0.0
+Pillow
+torch
+transformers
+vietocr
+craft-text-detector
+matplotlib
+opencv-contrib-python
+torchvision
