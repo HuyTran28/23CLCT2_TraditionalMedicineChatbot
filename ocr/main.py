@@ -3,13 +3,16 @@
 
 import argparse
 import sys
+import logging
 from pathlib import Path
 
+from modules.pipeline import OCRPipeline
 
-from modules.digital_parser import DigitalParser
-from modules.preprocessor import Preprocessor
-from modules.exporter import WordExporter
-from modules.ocr_engine import OCREngine
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 def check_ocr_dependencies():
     """Check if all required libraries for enhanced OCR are available"""
@@ -46,99 +49,152 @@ def check_ocr_dependencies():
     return True
 
 def main():
-    parser = argparse.ArgumentParser(description="Document OCR & Conversion Pipeline")
+    parser = argparse.ArgumentParser(
+        description="Document OCR & Conversion Pipeline - Convert PDFs to Word documents"
+    )
 
-    parser.add_argument("--mode", required=True, choices=["scan", "digital", "math"],
-                        help="Type of processing: scan | digital | math")
-
-    parser.add_argument("--input", required=True,
-                        help="Input PDF or image file")
+    parser.add_argument(
+        "--input",
+        required=False,
+        default=None,
+        help="Input PDF file or directory containing PDFs (defaults to config.INPUT_DIR if present)"
+    )
     
-    parser.add_argument("--output", default=None,
-                        help="Output file path (default: auto-generated)")
+    parser.add_argument(
+        "--output",
+        default="./output",
+        help="Output directory for converted files (default: ./output)"
+    )
 
-    parser.add_argument("--preprocess", default=False, action="store_true",
-                        help="Enable preprocessing for scanned PDFs")
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "scan", "digital"],
+        default="auto",
+        help="Processing mode: auto (detect) | scan (OCR) | digital (direct conversion)"
+    )
+
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Process all PDFs in input directory"
+    )
+
+    parser.add_argument(
+        "--no-preprocess",
+        action="store_true",
+        help="Disable preprocessing for scanned PDFs"
+    )
+
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="DPI for PDF to image conversion (default: 300)"
+    )
 
     args = parser.parse_args()
 
-    pdf_path = Path(args.input)
+    # Try to load optional configuration from `ocr/config.py` (if present).
+    # CLI arguments always take precedence over config values.
+    try:
+        import config as cfg
+        cfg_loaded = True
+        print("Loaded configuration from 'config.py'")
+    except Exception:
+        cfg = None
+        cfg_loaded = False
 
-    if not pdf_path.exists():
-        print(f"Input file does not exist")
+    # Check dependencies before running
+    if not check_ocr_dependencies():
         sys.exit(1)
 
-    # ========== MODE: DIGITAL DOCUMENT ==========
-    if args.mode == "digital":
-        print("Running in DIGITAL mode...")
-        digital_parser = DigitalParser()
+    # Resolve input path: CLI arg > config.INPUT_DIR > error
+    input_arg = args.input
+    if input_arg is None and cfg_loaded and hasattr(cfg, "INPUT_DIR"):
+        input_arg = cfg.INPUT_DIR
 
-        try:
-            output_path = args.output if args.output else pdf_path.with_suffix(".docx")
-            out_path = digital_parser.convert(pdf_path, output_path)
-            print(f"✓ Converted digital PDF → DOCX: {out_path}")
-        except Exception as e:
-            print(f"✗ Error: {e}")
-            sys.exit(1)
+    if input_arg is None:
+        print("❌ No input path provided. Pass --input or set INPUT_DIR in config.py")
+        sys.exit(1)
 
-        return
+    input_path = Path(input_arg)
+    if not input_path.exists():
+        print(f"❌ Input path does not exist: {input_path}")
+        sys.exit(1)
 
 
-    # ========== MODE: SCANNED DOCUMENT ========== 
-    if args.mode == "scan":
-        # Check dependencies before running OCR
-        if not check_ocr_dependencies():
-            sys.exit(1)
-        
-        print("🔍 Running in SCAN mode (Enhanced Vietnamese OCR)...")
-        exporter = WordExporter()
+    # Apply config defaults where CLI uses defaults (CLI always overrides)
+    # Note: argparse sets defaults; we only replace when user did not override.
+    if cfg_loaded:
+        # Override output if user did not supply a custom value
+        if args.output == "./output" and hasattr(cfg, "OUTPUT_DIR"):
+            args.output = cfg.OUTPUT_DIR
 
-        # Step 1: Preprocess (optional)
-        if args.preprocess:
-            print("Preprocessing images...")
-            pre = Preprocessor()
-            # Implement preprocessing if needed
-            pass
+        # Override dpi if user did not supply a custom value
+        if args.dpi == 300 and hasattr(cfg, "DPI"):
+            args.dpi = cfg.DPI
 
-        # Step 2: Enhanced OCR pipeline (CRAFT + VietOCR)
-        print("Using Enhanced Vietnamese OCR pipeline (CRAFT + VietOCR)...")
-        ocr = OCREngine()
-        
-        # Convert PDF to image if needed
-        # For now, assume input is an image (PNG/JPG)
-        # If PDF, you need to convert PDF pages to images first
-        image_path = str(pdf_path)
-        
-        try:
-            results = ocr.run(image_path, visualize=False)
+    # Determine enable_preprocessing (CLI --no-preprocess has priority)
+    if args.no_preprocess:
+        enable_preprocessing = False
+    else:
+        if cfg_loaded and hasattr(cfg, "ENABLE_PREPROCESSING"):
+            enable_preprocessing = bool(cfg.ENABLE_PREPROCESSING)
+        else:
+            enable_preprocessing = True
+
+    # Determine auto-detect behavior for pipeline
+    if args.mode == "auto":
+        auto_detect = cfg.AUTO_DETECT if (cfg_loaded and hasattr(cfg, "AUTO_DETECT")) else True
+        mode_arg = None
+    else:
+        auto_detect = False
+        mode_arg = args.mode
+
+    # Initialize pipeline (use computed flags)
+    pipeline = OCRPipeline(
+        output_dir=args.output,
+        temp_dir="./temp",
+        dpi=args.dpi,
+        enable_preprocessing=enable_preprocessing,
+        auto_detect=auto_detect
+    )
+
+    mode = None if args.mode == "auto" else args.mode
+
+    try:
+        if args.batch or input_path.is_dir():
+            # Batch processing
+            if not input_path.is_dir():
+                print("❌ --batch requires input to be a directory")
+                sys.exit(1)
             
-            # Export results to JSON
-            import json
-            json_filename = pdf_path.stem + "_ocr_results.json"
-            with open(json_filename, "w", encoding="utf-8") as f:
-                json.dump(results, f, ensure_ascii=False, indent=2)
-            print(f"✓ Saved {len(results)} detections to '{json_filename}'")
+            print(f"\n📁 Batch processing PDFs from: {input_path}")
+            results = pipeline.process_batch(input_path, mode=mode)
             
-            # Export to DOCX
-            output_path = args.output if args.output else pdf_path.stem + "_output.docx"
-            exporter.write_to_word(results, output_path)
-            print(f"✓ Exported to DOCX: {output_path}")
-        except Exception as e:
-            print(f"✗ OCR Error: {e}")
-            sys.exit(1)
-        
-        return
-
-    # # ========== MODE: MATH PDF ==========
-    # if args.mode == "math":
-    #     print("Running in MATH mode...")
-
-    #     ocr = OCREngine()
-    #     latex = ocr.detect_formula(pdf_path)
-
-    #     print("LaTeX Output:")
-    #     print(latex)
-    #     return
+            # Print summary
+            print("\n" + "="*60)
+            print("PROCESSING SUMMARY")
+            print("="*60)
+            for r in results:
+                status_icon = "✓" if r["status"] == "success" else "✗"
+                print(f"{status_icon} {Path(r['input']).name}")
+                if r["status"] == "success":
+                    print(f"   → {r['output']}")
+                else:
+                    print(f"   Error: {r.get('error', 'Unknown error')}")
+            
+        else:
+            # Single file processing
+            print(f"\n📄 Processing: {input_path.name}")
+            output_path = pipeline.process_pdf(input_path, mode=mode)
+            print(f"\n✓ Success! Output saved to: {output_path}")
+            
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
