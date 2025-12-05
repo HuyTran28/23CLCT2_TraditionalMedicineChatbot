@@ -180,4 +180,7 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-/input
+*.png
+*.jpg
+*.jpeg
+*.pdf
