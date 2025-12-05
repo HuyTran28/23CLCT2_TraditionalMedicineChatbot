@@ -6,7 +6,6 @@ Complete pipeline for converting Vietnamese PDF documents to Word format with au
 
 - ✅ **Automatic Detection**: Distinguishes between digital and scanned PDFs
 - ✅ **Multi-Page Support**: Processes entire PDF documents
-- ✅ **Batch Processing**: Convert multiple PDFs at once
 - ✅ **GPU Acceleration**: Optimized for Google Colab with CUDA support
 - ✅ **Vietnamese OCR**: CRAFT text detection + VietOCR recognition
 - ✅ **Image Preprocessing**: Deskewing and contrast enhancement
@@ -22,9 +21,6 @@ pip install -r requirements.txt
 
 # Process single file (auto-detect mode)
 python main.py --input ../input/sample.pdf --output ./output
-
-# Batch process all PDFs in input folder
-python main.py --input ../input --batch --output ./output
 
 # Force specific mode
 python main.py --input ../input/scanned.pdf --mode scan
@@ -60,18 +56,7 @@ print(f"Saved to: {output_path}")
 
 ### Batch Processing
 
-```python
-# Process all PDFs in directory
-results = pipeline.process_batch(
-    input_dir="./input",
-    pattern="*.pdf",
-    mode=None  # Auto-detect
-)
-
-# Print summary
-for r in results:
-    print(f"{r['status']}: {r['input']} -> {r['output']}")
-```
+Batch processing has been disabled in the CLI to avoid accidental large runs. Process one PDF at a time by calling `process_pdf` in a loop from your own script or run the CLI multiple times for each file.
 
 ### Force Specific Mode
 
@@ -90,7 +75,7 @@ pipeline.process_pdf("input/scanned.pdf", mode="scan")
 | `--input` | Input PDF file or directory | Required |
 | `--output` | Output directory | `./output` |
 | `--mode` | Processing mode: `auto`, `scan`, `digital` | `auto` |
-| `--batch` | Process all PDFs in input directory | `False` |
+| `--workers` | Number of worker threads for page-level parallelism | `CPU count` |
 | `--no-preprocess` | Disable image preprocessing | `False` |
 | `--dpi` | Resolution for PDF to image conversion | `300` |
 

@@ -80,6 +80,13 @@ def main():
     )
 
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of worker threads for page-level parallelism (default: CPU count)"
+    )
+
+    parser.add_argument(
         "--no-preprocess",
         action="store_true",
         help="Disable preprocessing for scanned PDFs"
@@ -94,7 +101,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Try to load optional configuration from `ocr/config.py` (if present).
     # CLI arguments always take precedence over config values.
     try:
         import config as cfg
@@ -123,7 +129,7 @@ def main():
         sys.exit(1)
 
 
-    # Apply config defaults where CLI uses defaults (CLI always overrides)
+    # Apply config defaults where CLI uses defaults
     # Note: argparse sets defaults; we only replace when user did not override.
     if cfg_loaded:
         # Override output if user did not supply a custom value
@@ -134,7 +140,7 @@ def main():
         if args.dpi == 300 and hasattr(cfg, "DPI"):
             args.dpi = cfg.DPI
 
-    # Determine enable_preprocessing (CLI --no-preprocess has priority)
+    # Determine enable_preprocessing
     if args.no_preprocess:
         enable_preprocessing = False
     else:
@@ -163,33 +169,20 @@ def main():
     mode = None if args.mode == "auto" else args.mode
 
     try:
+        # Disallow batch processing / directories — process one PDF at a time only
         if args.batch or input_path.is_dir():
-            # Batch processing
-            if not input_path.is_dir():
-                print("❌ --batch requires input to be a directory")
-                sys.exit(1)
-            
-            print(f"\n📁 Batch processing PDFs from: {input_path}")
-            results = pipeline.process_batch(input_path, mode=mode)
-            
-            # Print summary
-            print("\n" + "="*60)
-            print("PROCESSING SUMMARY")
-            print("="*60)
-            for r in results:
-                status_icon = "✓" if r["status"] == "success" else "✗"
-                print(f"{status_icon} {Path(r['input']).name}")
-                if r["status"] == "success":
-                    print(f"   → {r['output']}")
-                else:
-                    print(f"   Error: {r.get('error', 'Unknown error')}")
-            
-        else:
-            # Single file processing
-            print(f"\n📄 Processing: {input_path.name}")
-            output_path = pipeline.process_pdf(input_path, mode=mode)
-            print(f"\n✓ Success! Output saved to: {output_path}")
-            
+            print("❌ Batch processing is disabled. Provide a single PDF file as --input.")
+            print("   To process multiple files, run the script separately for each PDF.")
+            sys.exit(1)
+
+        # Initialize pipeline with worker setting
+        pipeline.max_workers = args.workers
+
+        # Single file processing
+        print(f"\n📄 Processing: {input_path.name}")
+        output_path = pipeline.process_pdf(input_path, mode=mode)
+        print(f"\n✓ Success! Output saved to: {output_path}")
+
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback

@@ -7,6 +7,8 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+import os
+import concurrent.futures
 
 from .digital_parser import DigitalParser
 from .pdf_converter import PDFConverter
@@ -48,6 +50,9 @@ class OCRPipeline:
         self.dpi = dpi
         self.enable_preprocessing = enable_preprocessing
         self.auto_detect = auto_detect
+        # Maximum number of worker threads for page-level parallelism.
+        # If None, defaults to number of CPUs.
+        self.max_workers: Optional[int] = None
         
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -130,35 +135,56 @@ class OCRPipeline:
             if not image_paths:
                 raise RuntimeError("No images generated from PDF")
             
-            # Step 2: Process each page with OCR
-            logger.info(f"Running OCR on {len(image_paths)} pages...")
-            all_pages_results = []
-            
-            for page_idx, image_path in enumerate(image_paths, start=1):
-                logger.info(f"  Processing page {page_idx}/{len(image_paths)}...")
-                
+            # Step 2: Process each page with OCR (parallelized)
+            num_pages = len(image_paths)
+            logger.info(f"Running OCR on {num_pages} pages (parallel)...")
+
+            # Determine worker count
+            workers = self.max_workers if self.max_workers is not None else (os.cpu_count() or 1)
+            logger.info(f"Using up to {workers} worker threads for page processing")
+
+            def _process_page(task: tuple[int, Path]) -> Dict[str, Any]:
+                page_idx, image_path = task
+                logger.info(f"  [worker] Processing page {page_idx}/{num_pages}...")
+
                 # Optional preprocessing
                 if self.enable_preprocessing:
-                    # Load image, preprocess, save back
                     import cv2
                     img = cv2.imread(str(image_path))
                     img = self.preprocessor.deskew_page(img)
                     img = self.preprocessor.enhance_contrast(img)
                     cv2.imwrite(str(image_path), img)
-                
+
                 # Run OCR
                 results = self.ocr_engine.run(str(image_path), visualize=False)
-                
+
                 # Add page number to each result
                 for r in results:
                     r["page_id"] = page_idx
-                
-                all_pages_results.append({
-                    "page_num": page_idx,
-                    "results": results
-                })
-                
-                logger.info(f"    Extracted {len(results)} text segments")
+
+                logger.info(f"    [worker] Extracted {len(results)} text segments from page {page_idx}")
+
+                return {"page_num": page_idx, "results": results}
+
+            tasks = [(i + 1, p) for i, p in enumerate(image_paths)]
+            all_pages_results: List[Dict[str, Any]] = []
+
+            # Use ThreadPoolExecutor for I/O and external-API-bound work
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                future_to_page = {ex.submit(_process_page, t): t[0] for t in tasks}
+
+                for fut in concurrent.futures.as_completed(future_to_page):
+                    page_num = future_to_page[fut]
+                    try:
+                        page_result = fut.result()
+                        all_pages_results.append(page_result)
+                    except Exception as e:
+                        logger.error(f"Page {page_num} processing failed: {e}")
+                        # Include an empty page result to preserve ordering
+                        all_pages_results.append({"page_num": page_num, "results": []})
+
+            # Ensure results are ordered by page number
+            all_pages_results.sort(key=lambda x: x["page_num"])
             
             # Step 3: Save intermediate JSON
             json_path = self.output_dir / f"{pdf_path.stem}_ocr_results.json"
