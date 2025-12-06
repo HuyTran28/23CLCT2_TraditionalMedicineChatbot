@@ -5,10 +5,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from digital_parser import DigitalParser
-from ocr.modules.ocr_engine import OCREngine
-from preprocessor import Preprocessor
-from exporter import WordExporter
+from ocr.modules.digital_parser import DigitalParser
+# from ocr.modules.ocr_engine import OCREngine
+from ocr.modules.preprocessor import Preprocessor
+from ocr.modules.exporter import json_to_docx, inject_break_tag
 
 
 def main():
@@ -46,7 +46,7 @@ def main():
 
     # ========== MODE: SCANNED DOCUMENT ==========
     # if args.mode == "scan":
-    #     print("🔍 Running in SCAN mode...")
+    #     print("Running in SCAN mode...")
 
     #     pre = Preprocessor()
     #     ocr = OCREngine()
