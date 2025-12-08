@@ -3,86 +3,190 @@
 
 import argparse
 import sys
+import logging
 from pathlib import Path
 
-from ocr.modules.digital_parser import DigitalParser
-# from ocr.modules.ocr_engine import OCREngine
-from ocr.modules.preprocessor import Preprocessor
-from ocr.modules.exporter import json_to_docx, inject_break_tag
+from modules.pipeline import OCRPipeline
 
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+def check_ocr_dependencies():
+    """Check if all required libraries for enhanced OCR are available"""
+    missing = []
+    
+    try:
+        import torch
+    except ImportError:
+        missing.append("torch")
+    
+    try:
+        import cv2
+    except ImportError:
+        missing.append("opencv-python")
+    
+    try:
+        from craft_text_detector import Craft
+    except ImportError:
+        missing.append("craft-text-detector")
+    
+    try:
+        from vietocr.tool.predictor import Predictor
+    except ImportError:
+        missing.append("vietocr")
+    
+    if missing:
+        print("❌ Missing required libraries:")
+        for lib in missing:
+            print(f"   - {lib}")
+        print("\nInstall missing libraries with:")
+        print("   pip install -r requirements.txt")
+        return False
+    
+    return True
 
 def main():
-    parser = argparse.ArgumentParser(description="Document OCR & Conversion Pipeline")
+    parser = argparse.ArgumentParser(
+        description="Document OCR & Conversion Pipeline - Convert PDFs to Word documents"
+    )
 
-    parser.add_argument("--mode", required=True, choices=["scan", "digital", "math"],
-                        help="Type of processing: scan | digital | math")
+    parser.add_argument(
+        "--input",
+        required=False,
+        default=None,
+        help="Input PDF file or directory containing PDFs (defaults to config.INPUT_DIR if present)"
+    )
+    
+    parser.add_argument(
+        "--output",
+        default="./output",
+        help="Output directory for converted files (default: ./output)"
+    )
 
-    parser.add_argument("--input", required=True,
-                        help="Input PDF file")
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "scan", "digital"],
+        default="auto",
+        help="Processing mode: auto (detect) | scan (OCR) | digital (direct conversion)"
+    )
 
-    parser.add_argument("--preprocess", default=False, action="store_true",
-                        help="Enable preprocessing for scanned PDFs")
+    parser.add_argument(
+        "--batch",
+        action="store_true",
+        help="Process all PDFs in input directory"
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of worker threads for page-level parallelism (default: CPU count)"
+    )
+
+    parser.add_argument(
+        "--no-preprocess",
+        action="store_true",
+        help="Disable preprocessing for scanned PDFs"
+    )
+
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="DPI for PDF to image conversion (default: 300)"
+    )
 
     args = parser.parse_args()
 
-    pdf_path = Path(args.input)
+    # CLI arguments always take precedence over config values.
+    try:
+        import config as cfg
+        cfg_loaded = True
+        print("Loaded configuration from 'config.py'")
+    except Exception:
+        cfg = None
+        cfg_loaded = False
 
-    if not pdf_path.exists():
-        print(f"Input file does not exist")
+    # Check dependencies before running
+    if not check_ocr_dependencies():
         sys.exit(1)
 
-    # ========== MODE: DIGITAL DOCUMENT ==========
-    if args.mode == "digital":
-        print("Running in DIGITAL mode...")
-        parser = DigitalParser()
+    # Resolve input path: CLI arg > config.INPUT_DIR > error
+    input_arg = args.input
+    if input_arg is None and cfg_loaded and hasattr(cfg, "INPUT_DIR"):
+        input_arg = cfg.INPUT_DIR
 
-        try:
-            out_path = parser.convert(pdf_path)
-            print(f"Converted digital PDF → DOCX")
-        except Exception as e:
-            print(f"Error: {e}")
+    if input_arg is None:
+        print("❌ No input path provided. Pass --input or set INPUT_DIR in config.py")
+        sys.exit(1)
 
-        return
+    input_path = Path(input_arg)
+    if not input_path.exists():
+        print(f"❌ Input path does not exist: {input_path}")
+        sys.exit(1)
 
-    # ========== MODE: SCANNED DOCUMENT ==========
-    # if args.mode == "scan":
-    #     print("Running in SCAN mode...")
 
-    #     pre = Preprocessor()
-    #     ocr = OCREngine()
-    #     exporter = WordExporter()
+    # Apply config defaults where CLI uses defaults
+    if cfg_loaded:
+        # Override output if user did not supply a custom value
+        if args.output == "./output" and hasattr(cfg, "OUTPUT_DIR"):
+            args.output = cfg.OUTPUT_DIR
 
-    #     # Step 1: Preprocess
-    #     if args.preprocess:
-    #         print("Preprocessing images...")
-    #         # (Bạn có thể tự nối với hàm crop/enhance tùy pipeline)
-    #         pass
+        # Override dpi if user did not supply a custom value
+        if args.dpi == 300 and hasattr(cfg, "DPI"):
+            args.dpi = cfg.DPI
 
-    #     # Step 2: OCR pipeline
-    #     print("Running OCR...")
-    #     text, images, tables = ocr.extract_layout(pdf_path)
+    # Determine enable_preprocessing
+    if args.no_preprocess:
+        enable_preprocessing = False
+    else:
+        if cfg_loaded and hasattr(cfg, "ENABLE_PREPROCESSING"):
+            enable_preprocessing = bool(cfg.ENABLE_PREPROCESSING)
+        else:
+            enable_preprocessing = True
 
-    #     # Step 3: Export to Word
-    #     print("Exporting to DOCX...")
-    #     output = exporter.write_to_word({
-    #         "text": text,
-    #         "images": images,
-    #         "tables": tables
-    #     })
+    # Determine auto-detect behavior for pipeline
+    if args.mode == "auto":
+        auto_detect = cfg.AUTO_DETECT if (cfg_loaded and hasattr(cfg, "AUTO_DETECT")) else True
+        mode_arg = None
+    else:
+        auto_detect = False
+        mode_arg = args.mode
 
-    #     print(f"Exported to: {output}")
-    #     return
+    # Initialize pipeline
+    pipeline = OCRPipeline(
+        output_dir=args.output,
+        temp_dir="./temp",
+        dpi=args.dpi,
+        enable_preprocessing=enable_preprocessing,
+        auto_detect=auto_detect
+    )
 
-    # # ========== MODE: MATH PDF ==========
-    # if args.mode == "math":
-    #     print("Running in MATH mode...")
+    mode = None if args.mode == "auto" else args.mode
 
-    #     ocr = OCREngine()
-    #     latex = ocr.detect_formula(pdf_path)
+    try:
+        # Disallow batch processing / directories — process one PDF at a time only
+        if args.batch or input_path.is_dir():
+            print("❌ Batch processing is disabled. Provide a single PDF file as --input.")
+            print("   To process multiple files, run the script separately for each PDF.")
+            sys.exit(1)
 
-    #     print("LaTeX Output:")
-    #     print(latex)
-    #     return
+        # Initialize pipeline with worker setting
+        pipeline.max_workers = args.workers
+
+        # Single file processing
+        print(f"\n📄 Processing: {input_path.name}")
+        output_path = pipeline.process_pdf(input_path, mode=mode)
+        print(f"\n✓ Success! Output saved to: {output_path}")
+
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":
