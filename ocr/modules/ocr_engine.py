@@ -74,7 +74,10 @@ class OCREngine:
         # Use PaddleOCR to detect text boxes only
         result = self.detector.ocr(image_path, cls=False)
         # result[0] is a list of (box, _) pairs
-        boxes = [np.array(line[0]).astype(int) for line in result[0]]
+        # Handle case where result[0] might be None or empty
+        if not result or result[0] is None:
+            return {"boxes": []}
+        boxes = [np.array(line[0]).astype(int) for line in result[0] if line]
         return {"boxes": boxes}
 
     def run(self, image_path, visualize=False):

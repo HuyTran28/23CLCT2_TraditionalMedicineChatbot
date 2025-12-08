@@ -98,6 +98,24 @@ def main():
         default=300,
         help="DPI for PDF to image conversion (default: 300)"
     )
+    
+    parser.add_argument(
+        "--no-images",
+        action="store_true",
+        help="Disable image extraction and embedding"
+    )
+    
+    parser.add_argument(
+        "--no-layout",
+        action="store_true",
+        help="Disable layout analysis (headers/footers/structure preservation)"
+    )
+    
+    parser.add_argument(
+        "--easydataset",
+        action="store_true",
+        help="Generate EasyDataset format output for post-processing"
+    )
 
     args = parser.parse_args()
 
@@ -162,7 +180,9 @@ def main():
         temp_dir="./temp",
         dpi=args.dpi,
         enable_preprocessing=enable_preprocessing,
-        auto_detect=auto_detect
+        auto_detect=auto_detect,
+        extract_images=not args.no_images,
+        analyze_layout=not args.no_layout
     )
 
     mode = None if args.mode == "auto" else args.mode
@@ -181,6 +201,35 @@ def main():
         print(f"\n📄 Processing: {input_path.name}")
         output_path = pipeline.process_pdf(input_path, mode=mode)
         print(f"\n✓ Success! Output saved to: {output_path}")
+        
+        # Generate EasyDataset format if requested
+        if args.easydataset:
+            print("\n📊 Generating EasyDataset format...")
+            from modules.easydataset_processor import EasyDatasetProcessor
+            
+            processor = EasyDatasetProcessor(chunk_size=512, overlap=50)
+            
+            # Find the OCR results JSON
+            json_path = Path(args.output) / f"{input_path.stem}_ocr_results.json"
+            
+            if json_path.exists():
+                # Process to EasyDataset format
+                easydataset_path = Path(args.output) / f"{input_path.stem}_easydataset.json"
+                dataset = processor.process_ocr_results(json_path, easydataset_path)
+                
+                # Export for Q&A generation
+                qa_path = Path(args.output) / f"{input_path.stem}_qa.json"
+                processor.export_for_qa_generation(dataset, qa_path)
+                
+                # Export for retrieval
+                retrieval_path = Path(args.output) / f"{input_path.stem}_retrieval.json"
+                processor.export_for_retrieval(dataset, retrieval_path)
+                
+                print(f"  ✓ EasyDataset format: {easydataset_path}")
+                print(f"  ✓ Q&A format: {qa_path}")
+                print(f"  ✓ Retrieval format: {retrieval_path}")
+            else:
+                print(f"  ⚠ OCR results JSON not found: {json_path}")
 
     except Exception as e:
         print(f"\n❌ Error: {e}")

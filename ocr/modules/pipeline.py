@@ -15,6 +15,8 @@ from .pdf_converter import PDFConverter
 from .preprocessor import Preprocessor
 from .ocr_engine import OCREngine
 from .exporter import WordExporter
+from .image_extractor import ImageExtractor
+from .layout_analyzer import LayoutAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,9 @@ class OCRPipeline:
         temp_dir: str | Path = "./temp",
         dpi: int = 300,
         enable_preprocessing: bool = True,
-        auto_detect: bool = True
+        auto_detect: bool = True,
+        extract_images: bool = True,
+        analyze_layout: bool = True
     ):
         """
         Initialize OCR Pipeline
@@ -44,12 +48,16 @@ class OCRPipeline:
             dpi: Resolution for PDF to image conversion
             enable_preprocessing: Enable image preprocessing for scanned docs
             auto_detect: Automatically detect if PDF is digital or scanned
+            extract_images: Extract and embed images from PDF
+            analyze_layout: Analyze and preserve document layout/structure
         """
         self.output_dir = Path(output_dir)
         self.temp_dir = Path(temp_dir)
         self.dpi = dpi
         self.enable_preprocessing = enable_preprocessing
         self.auto_detect = auto_detect
+        self.extract_images = extract_images
+        self.analyze_layout = analyze_layout
         # Maximum number of worker threads for page-level parallelism.
         # If None, defaults to number of CPUs.
         self.max_workers: Optional[int] = None
@@ -64,6 +72,8 @@ class OCRPipeline:
         self.preprocessor = Preprocessor(output_dir=Path(temp_dir) / "preprocessed")
         self.ocr_engine = OCREngine(output_dir=Path(temp_dir) / "craft_output")
         self.exporter = WordExporter()
+        self.image_extractor = ImageExtractor(output_dir=Path(temp_dir) / "extracted_images")
+        self.layout_analyzer = LayoutAnalyzer()
     
     def process_pdf(
         self,
@@ -120,13 +130,14 @@ class OCRPipeline:
             raise
     
     def _process_scanned(self, pdf_path: Path, output_path: Path) -> Path:
-        """Process scanned PDF using OCR pipeline"""
+        """Process scanned PDF using OCR pipeline with CV-based figure detection and layout analysis"""
         temp_images_dir = self.temp_dir / f"{pdf_path.stem}_images"
         temp_images_dir.mkdir(parents=True, exist_ok=True)
         
         try:
             # Step 1: Convert PDF to images
-            logger.info("Converting PDF pages to images...")
+            # For scanned PDFs, skip embedded image extraction since they're just page scans
+            logger.info("Step 1: Converting PDF pages to images...")
             image_paths = self.pdf_converter.pdf_to_images(
                 pdf_path,
                 output_dir=temp_images_dir
@@ -135,36 +146,65 @@ class OCRPipeline:
             if not image_paths:
                 raise RuntimeError("No images generated from PDF")
             
-            # Step 2: Process each page with OCR (parallelized)
+            # Step 2: Extract figures from scanned pages using computer vision
+            extracted_images = []
+            if self.extract_images:
+                logger.info("Step 2: Detecting figures in scanned pages using CV methods...")
+                try:
+                    for page_idx, image_path in enumerate(image_paths, start=1):
+                        page_figures = self.image_extractor.extract_figures_from_page_image(
+                            image_path,
+                            page_num=page_idx,
+                            prefix=f"{pdf_path.stem}_fig",
+                            use_multiple_strategies=True  # Use all CV strategies
+                        )
+                        extracted_images.extend(page_figures)
+                    
+                    if len(extracted_images) > 0:
+                        logger.info(f"✓ Detected {len(extracted_images)} figures from scanned pages")
+                    else:
+                        logger.info("No figures detected in scanned pages")
+                except Exception as e:
+                    logger.warning(f"Figure detection failed: {e}")
+            
+            # Get page dimensions for layout analysis
+            import cv2
+            first_page = cv2.imread(str(image_paths[0]))
+            page_height, page_width = first_page.shape[:2] if first_page is not None else (3000, 2000)
+            
+            # Step 3: Process each page with OCR (parallelized)
             num_pages = len(image_paths)
-            logger.info(f"Running OCR on {num_pages} pages (parallel)...")
+            logger.info(f"Step 3: Running OCR on {num_pages} pages...")
 
-            # Determine worker count
-            workers = self.max_workers if self.max_workers is not None else (os.cpu_count() or 1)
-            logger.info(f"Using up to {workers} worker threads for page processing")
+            # Determine worker count - reduce workers to avoid CPU contention
+            # OCR is CPU-intensive, so limit to 2-4 workers even on high-core systems
+            max_optimal_workers = min(4, os.cpu_count() or 1)
+            workers = self.max_workers if self.max_workers is not None else max_optimal_workers
+            logger.info(f"Using {workers} worker threads for page processing")
 
             def _process_page(task: tuple[int, Path]) -> Dict[str, Any]:
                 page_idx, image_path = task
-                logger.info(f"  [worker] Processing page {page_idx}/{num_pages}...")
+                
+                try:
+                    # Optional preprocessing
+                    if self.enable_preprocessing:
+                        import cv2
+                        img = cv2.imread(str(image_path))
+                        img = self.preprocessor.deskew_page(img)
+                        img = self.preprocessor.enhance_contrast(img)
+                        cv2.imwrite(str(image_path), img)
 
-                # Optional preprocessing
-                if self.enable_preprocessing:
-                    import cv2
-                    img = cv2.imread(str(image_path))
-                    img = self.preprocessor.deskew_page(img)
-                    img = self.preprocessor.enhance_contrast(img)
-                    cv2.imwrite(str(image_path), img)
+                    # Run OCR
+                    results = self.ocr_engine.run(str(image_path), visualize=False)
 
-                # Run OCR
-                results = self.ocr_engine.run(str(image_path), visualize=False)
+                    # Add page number to each result
+                    for r in results:
+                        r["page_id"] = page_idx
 
-                # Add page number to each result
-                for r in results:
-                    r["page_id"] = page_idx
-
-                logger.info(f"    [worker] Extracted {len(results)} text segments from page {page_idx}")
-
-                return {"page_num": page_idx, "results": results}
+                    return {"page_num": page_idx, "results": results, "image_path": str(image_path)}
+                except Exception as e:
+                    logger.error(f"[ERROR] Page {page_idx} processing failed: {e}")
+                    return {"page_num": page_idx, "results": [], "error": str(e)}
 
             tasks = [(i + 1, p) for i, p in enumerate(image_paths)]
             all_pages_results: List[Dict[str, Any]] = []
@@ -178,23 +218,54 @@ class OCRPipeline:
                     try:
                         page_result = fut.result()
                         all_pages_results.append(page_result)
+                        logger.info(f"✓ Completed page {page_num}/{num_pages}")
                     except Exception as e:
                         logger.error(f"Page {page_num} processing failed: {e}")
                         # Include an empty page result to preserve ordering
-                        all_pages_results.append({"page_num": page_num, "results": []})
+                        all_pages_results.append({"page_num": page_num, "results": [], "error": str(e)})
 
             # Ensure results are ordered by page number
             all_pages_results.sort(key=lambda x: x["page_num"])
             
-            # Step 3: Save intermediate JSON
+            # Step 4: Layout analysis and classification (if enabled)
+            if self.analyze_layout:
+                logger.info("Analyzing document layout and structure...")
+                for page_result in all_pages_results:
+                    results = page_result.get("results", [])
+                    if results:
+                        # Classify text elements
+                        classified = self.layout_analyzer.classify_text_elements(
+                            results,
+                            page_height=page_height,
+                            page_width=page_width
+                        )
+                        
+                        # Merge with images for this page
+                        page_num = page_result.get("page_num", 1)
+                        page_images = [img for img in extracted_images if img.get("page_num") == page_num]
+                        
+                        if page_images:
+                            classified = self.layout_analyzer.merge_with_images(classified, page_images)
+                        
+                        page_result["results"] = classified
+                logger.info("✓ Layout analysis complete")
+            
+            # Step 5: Save intermediate JSON
             json_path = self.output_dir / f"{pdf_path.stem}_ocr_results.json"
             with open(json_path, "w", encoding="utf-8") as f:
-                json.dump({"pages": all_pages_results}, f, ensure_ascii=False, indent=2)
+                json.dump({
+                    "pages": all_pages_results,
+                    "images": extracted_images
+                }, f, ensure_ascii=False, indent=2)
             logger.info(f"✓ Saved OCR results: {json_path}")
             
-            # Step 4: Export to DOCX
+            # Step 6: Export to DOCX
             logger.info("Exporting to Word document...")
-            self.exporter.write_to_word({"pages": all_pages_results}, str(output_path))
+            self.exporter.write_to_word(
+                {"pages": all_pages_results}, 
+                str(output_path),
+                images=extracted_images
+            )
             logger.info(f"✓ OCR processing complete: {output_path}")
             
             return output_path
