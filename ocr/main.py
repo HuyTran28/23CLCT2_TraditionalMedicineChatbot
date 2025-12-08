@@ -130,7 +130,6 @@ def main():
 
 
     # Apply config defaults where CLI uses defaults
-    # Note: argparse sets defaults; we only replace when user did not override.
     if cfg_loaded:
         # Override output if user did not supply a custom value
         if args.output == "./output" and hasattr(cfg, "OUTPUT_DIR"):
@@ -157,7 +156,7 @@ def main():
         auto_detect = False
         mode_arg = args.mode
 
-    # Initialize pipeline (use computed flags)
+    # Initialize pipeline
     pipeline = OCRPipeline(
         output_dir=args.output,
         temp_dir="./temp",

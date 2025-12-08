@@ -3,34 +3,32 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from craft_text_detector import Craft
+from paddleocr import PaddleOCR
 from vietocr.tool.predictor import Predictor
 from vietocr.tool.config import Cfg
 
 class OCREngine:
     """
-    Enhanced Vietnamese OCR Engine using CRAFT text detection + VietOCR recognition.
-    
+    Enhanced Vietnamese OCR Engine using PaddleOCR detection + VietOCR recognition.
     This is the default OCR engine for the pipeline, optimized for Vietnamese text.
-    Uses CRAFT for text region detection and VietOCR for text recognition.
+    Uses PaddleOCR for text region detection and VietOCR for text recognition.
     """
-    def __init__(self, output_dir='./craft_output', device=None):
+    def __init__(self, output_dir='./paddle_output', device=None):
         """
         Initialize the Enhanced Vietnamese OCR Engine.
-        
         Args:
-            output_dir: Directory to save CRAFT detection outputs
+            output_dir: Directory to save detection outputs
             device: 'cuda' or 'cpu'. If None, auto-detects CUDA availability
         """
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         print(f"Using device: {self.device}")
-        
-        # Initialize CRAFT text detector
+
+        # Initialize PaddleOCR detector (detection only)
         try:
-            self.craft = Craft(output_dir=output_dir, crop_type="poly", cuda=torch.cuda.is_available())
+            self.detector = PaddleOCR(use_angle_cls=False, lang='en', det=True, rec=False, gpu=(self.device=='cuda'))
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize CRAFT detector: {e}")
-        
+            raise RuntimeError(f"Failed to initialize PaddleOCR detector: {e}")
+
         # Initialize VietOCR recognizer
         try:
             config = Cfg.load_config_from_name('vgg_transformer')
@@ -45,7 +43,7 @@ class OCREngine:
     def group_boxes_to_lines(boxes, y_threshold=10):
         if len(boxes) == 0:
             return []
-        box_centers = [np.mean(box[:, 1]) for box in boxes]
+        box_centers = [np.mean([pt[1] for pt in box]) for box in boxes]
         sorted_idx = np.argsort(box_centers)
         boxes_sorted = [boxes[i] for i in sorted_idx]
         centers_sorted = [box_centers[i] for i in sorted_idx]
@@ -72,26 +70,12 @@ class OCREngine:
             merged_lines.append(np.array([[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]]))
         return merged_lines
 
-    def craft_detect_safe(self, image_path):
-        from craft_text_detector.image_utils import read_image, normalizeMeanVariance, resize_aspect_ratio
-        from craft_text_detector.craft_utils import getDetBoxes, adjustResultCoordinates
-        image = read_image(image_path)
-        img_resized, target_ratio, size_heatmap = resize_aspect_ratio(
-            image, self.craft.long_size, interpolation=cv2.INTER_LINEAR)
-        ratio_h = ratio_w = 1 / target_ratio
-        x = normalizeMeanVariance(img_resized)
-        x = torch.from_numpy(x).permute(2, 0, 1).unsqueeze(0).float()
-        if self.craft.cuda:
-            x = x.cuda()
-        with torch.no_grad():
-            y, _ = self.craft.craft_net(x)
-        score_text = y[0, :, :, 0].cpu().numpy()
-        score_link = y[0, :, :, 1].cpu().numpy()
-        boxes, polys = getDetBoxes(score_text, score_link, text_threshold=0.7, link_threshold=0.8, low_text=0.4)
-        polys = [p for p in polys if p is not None]
-        boxes = adjustResultCoordinates(boxes, ratio_w, ratio_h)
-        polys = adjustResultCoordinates(polys, ratio_w, ratio_h)
-        return {"boxes": boxes, "polys": polys, "heatmap": score_text}
+    def paddle_detect(self, image_path):
+        # Use PaddleOCR to detect text boxes only
+        result = self.detector.ocr(image_path, cls=False)
+        # result[0] is a list of (box, _) pairs
+        boxes = [np.array(line[0]).astype(int) for line in result[0]]
+        return {"boxes": boxes}
 
     def run(self, image_path, visualize=False):
         img = cv2.imread(image_path)
@@ -99,7 +83,7 @@ class OCREngine:
             raise FileNotFoundError(f"Cannot read image: {image_path}")
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = img.shape[:2]
-        prediction_result = self.craft_detect_safe(image_path)
+        prediction_result = self.paddle_detect(image_path)
         boxes = prediction_result['boxes']
         boxes_lines = self.group_boxes_to_lines(boxes, y_threshold=10)
         regions = boxes_lines

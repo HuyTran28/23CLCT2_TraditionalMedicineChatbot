@@ -5,8 +5,7 @@ import logging
 
 # Directory Configuration (relative paths)
 INPUT_DIR = "../input"           # Input folder containing PDFs
-OUTPUT_DIR = "./output"          # Output folder for Word files
-TEMP_DIR = "./temp"              # Temporary files directory
+OUTPUT_DIR = "./ocr/output"          # Output folder for Word files
 
 # Processing Configuration
 AUTO_DETECT = True               # Auto-detect digital vs scanned PDFs

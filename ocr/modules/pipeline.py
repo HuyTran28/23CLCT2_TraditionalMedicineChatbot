@@ -61,8 +61,8 @@ class OCRPipeline:
         # Initialize modules
         self.digital_parser = DigitalParser()
         self.pdf_converter = PDFConverter(dpi=dpi)
-        self.preprocessor = Preprocessor(output_dir=temp_dir / "preprocessed")
-        self.ocr_engine = OCREngine(output_dir=str(temp_dir / "craft_output"))
+        self.preprocessor = Preprocessor(output_dir=Path(temp_dir) / "preprocessed")
+        self.ocr_engine = OCREngine(output_dir=Path(temp_dir) / "craft_output")
         self.exporter = WordExporter()
     
     def process_pdf(
