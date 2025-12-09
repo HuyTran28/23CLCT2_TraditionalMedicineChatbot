@@ -15,29 +15,12 @@ logging.basicConfig(
 )
 
 def check_ocr_dependencies():
-    """Check if all required libraries for enhanced OCR are available"""
+    """Check if all required libraries for marker-pdf OCR are available"""
     missing = []
-    
     try:
-        import torch
+        from marker.converters.pdf import PdfConverter
     except ImportError:
-        missing.append("torch")
-    
-    try:
-        import cv2
-    except ImportError:
-        missing.append("opencv-python")
-    
-    try:
-        from craft_text_detector import Craft
-    except ImportError:
-        missing.append("craft-text-detector")
-    
-    try:
-        from vietocr.tool.predictor import Predictor
-    except ImportError:
-        missing.append("vietocr")
-    
+        missing.append("marker-pdf")
     if missing:
         print("❌ Missing required libraries:")
         for lib in missing:
@@ -45,7 +28,6 @@ def check_ocr_dependencies():
         print("\nInstall missing libraries with:")
         print("   pip install -r requirements.txt")
         return False
-    
     return True
 
 def main():
@@ -112,10 +94,24 @@ def main():
     )
     
     parser.add_argument(
+        "--no-tables",
+        action="store_true",
+        help="Disable table extraction and processing"
+    )
+    
+    parser.add_argument(
         "--easydataset",
         action="store_true",
         help="Generate EasyDataset format output for post-processing"
     )
+    
+    parser.add_argument(
+        "--llm-correction",
+        action="store_true",
+        help="Enable FREE spelling correction for OCR output (no API costs!)"
+    )
+    
+    
 
     args = parser.parse_args()
 
@@ -182,7 +178,9 @@ def main():
         enable_preprocessing=enable_preprocessing,
         auto_detect=auto_detect,
         extract_images=not args.no_images,
-        analyze_layout=not args.no_layout
+        analyze_layout=not args.no_layout,
+        extract_tables=not args.no_tables,
+        use_llm_correction=args.llm_correction
     )
 
     mode = None if args.mode == "auto" else args.mode

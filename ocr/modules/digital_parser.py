@@ -1,11 +1,3 @@
-# Digital Parser module (Person 4)
-# Contains pdf2docx logic
-# digital_parser.py
-
-# run pip install pdf2docx before starting this mode
-# run pip install PyMuPDF before starting this mode
-
-
 from __future__ import annotations
 import logging
 from pathlib import Path
@@ -40,24 +32,15 @@ class DigitalParser:
     # ---------------------------------------------------------
     # 1. Check whether PDF is a digital version or scanned version
     # ---------------------------------------------------------
-
     # Algorithm explaination:
     # -Check that the PDF file exists and that fitz is installed.
-
     # -Open the PDF and read the first page.
-
     # -Extract text and strip whitespace.
-
     # -If text is too short → likely a scanned image → return False.
-
     # -Compute text density = number of characters / page area.
-
     # -Compare density to min_text_ratio.
-
     #    +High → digital → True
-
     #    +Low → scanned → False
-
     # -Catch exceptions to avoid crashing.
 
     @staticmethod

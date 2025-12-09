@@ -1,7 +1,3 @@
-# EasyDataset Integration Module
-# Processes OCR output for use with EasyDataset framework
-# Structures data for efficient post-processing and dataset creation
-
 import json
 import logging
 from pathlib import Path

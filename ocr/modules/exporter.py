@@ -43,9 +43,16 @@ class WordExporter:
             # Add image with caption
             image_id = image_data.get('image_id', 'unknown')
             
+            # Add spacing before image
+            spacing_p = doc.add_paragraph()
+            spacing_p.paragraph_format.space_before = Pt(6)
+            spacing_p.paragraph_format.space_after = Pt(3)
+            
             # Add paragraph for image
             p = doc.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.space_after = Pt(6)
             
             # Calculate image dimensions (maintain aspect ratio)
             original_width = image_data.get('width', 800)
@@ -60,22 +67,40 @@ class WordExporter:
                 original_height = 600
 
             aspect_ratio = original_height / original_width
-            width_inches = min(self.max_image_width, original_width / 100)  # Rough conversion
+            
+            # Adjust max width based on aspect ratio (taller images get less width)
+            if aspect_ratio > 1.5:  # Very tall image
+                max_width = min(4.0, self.max_image_width)
+            elif aspect_ratio > 1.2:  # Tall image  
+                max_width = min(5.0, self.max_image_width)
+            else:  # Normal or wide image
+                max_width = self.max_image_width
+            
+            # Calculate final dimensions
+            width_inches = min(max_width, original_width / 100)
             height_inches = width_inches * aspect_ratio
+            
+            # Limit height to avoid overly tall images
+            max_height = 8.0  # Maximum 8 inches tall
+            if height_inches > max_height:
+                height_inches = max_height
+                width_inches = height_inches / aspect_ratio
 
             # Add the image
             run = p.add_run()
             run.add_picture(str(image_path), width=Inches(width_inches))
             
-            # Add caption below image
+            # Add caption below image with better formatting
             caption_p = doc.add_paragraph()
             caption_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            caption_p.paragraph_format.space_before = Pt(3)
+            caption_p.paragraph_format.space_after = Pt(6)
             caption_run = caption_p.add_run(f"[{image_id}]")
-            caption_run.font.size = Pt(10)
+            caption_run.font.size = Pt(9)
             caption_run.font.italic = True
-            caption_run.font.color.rgb = RGBColor(128, 128, 128)
+            caption_run.font.color.rgb = RGBColor(100, 100, 100)
             
-            logger.debug(f"Added image {image_id} to document")
+            logger.debug(f"Added image {image_id} to document ({width_inches:.1f}x{height_inches:.1f} inches)")
             return True
             
         except FileNotFoundError:
@@ -84,6 +109,86 @@ class WordExporter:
         except Exception as e:
             logger.warning(f"Failed to add image {image_data.get('image_id', 'unknown')}: {e}")
             return False
+
+    def add_table_to_document(self, doc, table_data):
+        """
+        Add a table to the Word document with improved formatting
+        
+        Args:
+            doc: Document object
+            table_data: Dictionary with table structure and cell data
+        
+        Returns:
+            bool: True if table was added successfully
+        """
+        try:
+            table_id = table_data.get('table_id', 'unknown')
+            structure = table_data.get('structure', {})
+            cells = structure.get('cells', [])
+            
+            if not cells:
+                # If no structure, add as image
+                return self.add_image_to_document(doc, table_data)
+            
+            rows = len(cells)
+            cols = len(cells[0]) if cells else 0
+            
+            if rows == 0 or cols == 0:
+                return False
+            
+            # Add spacing before table
+            spacing_p = doc.add_paragraph()
+            spacing_p.paragraph_format.space_before = Pt(6)
+            spacing_p.paragraph_format.space_after = Pt(3)
+            
+            # Add table title
+            title_p = doc.add_paragraph()
+            title_run = title_p.add_run(f"[{table_id}]")
+            title_run.font.bold = True
+            title_run.font.size = Pt(10)
+            title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            title_p.paragraph_format.space_before = Pt(6)
+            title_p.paragraph_format.space_after = Pt(3)
+            
+            # Create table
+            table = doc.add_table(rows=rows, cols=cols)
+            table.style = 'Table Grid'
+            
+            # Apply table formatting
+            table.autofit = False
+            table.allow_autofit = False
+            
+            # Fill cells
+            for i, row_data in enumerate(cells):
+                for j, cell_data in enumerate(row_data):
+                    cell = table.rows[i].cells[j]
+                    cell.text = cell_data.get('text', '')
+                    
+                    # Format cell text
+                    for paragraph in cell.paragraphs:
+                        paragraph.paragraph_format.space_before = Pt(2)
+                        paragraph.paragraph_format.space_after = Pt(2)
+                        for run in paragraph.runs:
+                            run.font.size = Pt(9)
+                            
+                    # Add cell padding
+                    cell.vertical_alignment = 1  # Center vertically
+            
+            # Add spacing after table
+            after_spacing_p = doc.add_paragraph()
+            after_spacing_p.paragraph_format.space_before = Pt(3)
+            after_spacing_p.paragraph_format.space_after = Pt(6)
+            
+            logger.debug(f"Added table {table_id} ({rows}x{cols}) to document")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Failed to add table {table_data.get('table_id', 'unknown')}: {e}")
+            # Fallback: try to add as image
+            try:
+                return self.add_image_to_document(doc, table_data)
+            except:
+                return False
 
     @staticmethod
     def inject_break_tag(text: str) -> str:
@@ -97,7 +202,7 @@ class WordExporter:
                 return text.rstrip() + " </break>"
         return text
 
-    def write_to_word(self, data, output_path="output.docx", images=None):
+    def write_to_word(self, data, output_path="output.docx", images=None, tables=None):
         """
         Export OCR results to Word document
         
@@ -109,6 +214,7 @@ class WordExporter:
                 - dict with 'pages' key: Multi-page OCR results
             output_path: str, path to save docx
             images: Optional list of image dictionaries to embed
+            tables: Optional list of table dictionaries to embed
         
         Returns:
             Path to saved document
@@ -122,7 +228,7 @@ class WordExporter:
             items = data["results"]
         elif isinstance(data, dict) and "pages" in data:
             # Multi-page format: {"pages": [{page_num: 1, results: [...]}, ...]}
-            return self._write_multipage_to_word(data["pages"], output_path, images)
+            return self._write_multipage_to_word(data["pages"], output_path, images, tables)
         elif isinstance(data, list):
             items = data
         elif isinstance(data, dict):
@@ -146,9 +252,10 @@ class WordExporter:
         doc = Document()
 
         for page_index, (page_id, page_items) in enumerate(pages.items()):
-            # Separate text items and image items
-            text_items = [it for it in page_items if it.get("element_type") != "image"]
+            # Separate text items, image items, and table items
+            text_items = [it for it in page_items if it.get("element_type") not in ["image", "table"]]
             image_items = [it for it in page_items if it.get("element_type") == "image"]
+            table_items = [it for it in page_items if it.get("element_type") == "table"]
             
             # Sort text items by position
             text_items = sorted(
@@ -208,6 +315,15 @@ class WordExporter:
                         added_count += 1
                 if added_count > 0:
                     logger.info(f"Added {added_count}/{len(image_items)} images for page {page_id}")
+            
+            # Add tables for this page
+            if table_items:
+                added_count = 0
+                for tbl_item in table_items:
+                    if self.add_table_to_document(doc, tbl_item):
+                        added_count += 1
+                if added_count > 0:
+                    logger.info(f"Added {added_count}/{len(table_items)} tables for page {page_id}")
 
             if page_index < len(pages) - 1:
                 doc.add_page_break()
@@ -216,7 +332,7 @@ class WordExporter:
         print("Saved:", output_path)
         return output_path
     
-    def _write_multipage_to_word(self, pages_data, output_path="output.docx", images=None):
+    def _write_multipage_to_word(self, pages_data, output_path="output.docx", images=None, tables=None):
         """
         Export multi-page OCR results to Word document
         
@@ -224,6 +340,7 @@ class WordExporter:
             pages_data: List of dicts with 'page_num' and 'results' keys
             output_path: str, path to save docx
             images: Optional list of image dictionaries to embed
+            tables: Optional list of table dictionaries to embed
         
         Returns:
             Path to saved document
@@ -233,12 +350,19 @@ class WordExporter:
         # Sort pages by page number
         pages_data = sorted(pages_data, key=lambda p: p.get("page_num", 1))
         
-        # Group images by page if provided
+        # Group images and tables by page
         images_by_page = {}
+        tables_by_page = {}
+        
         if images:
             for img in images:
                 page_num = img.get("page_num", 1)
                 images_by_page.setdefault(page_num, []).append(img)
+        
+        if tables:
+            for tbl in tables:
+                page_num = tbl.get("page_num", 1)
+                tables_by_page.setdefault(page_num, []).append(tbl)
         
         for page_idx, page_data in enumerate(pages_data):
             page_num = page_data.get("page_num", page_idx + 1)
@@ -247,9 +371,10 @@ class WordExporter:
             if not results:
                 continue
             
-            # Separate text and image elements
-            text_results = [r for r in results if r.get("element_type") != "image"]
+            # Separate text, image, and table elements
+            text_results = [r for r in results if r.get("element_type") not in ["image", "table"]]
             image_results = [r for r in results if r.get("element_type") == "image"]
+            table_results = [r for r in results if r.get("element_type") == "table"]
             
             # Sort text results by vertical position, then horizontal
             text_results = sorted(
@@ -314,11 +439,27 @@ class WordExporter:
                     if self.add_image_to_document(doc, img):
                         added_from_list += 1
             
+            # Add tables from results
+            added_tables_from_results = 0
+            for tbl_item in table_results:
+                if self.add_table_to_document(doc, tbl_item):
+                    added_tables_from_results += 1
+            
+            # Add tables from separate table list
+            added_tables_from_list = 0
+            if page_num in tables_by_page:
+                for tbl in tables_by_page[page_num]:
+                    if self.add_table_to_document(doc, tbl):
+                        added_tables_from_list += 1
+            
             # Log summary
-            total_added = added_from_results + added_from_list
-            total_attempted = len(image_results) + len(images_by_page.get(page_num, []))
-            if total_attempted > 0 and total_added > 0:
-                logger.info(f"Page {page_num}: Added {total_added}/{total_attempted} images")
+            total_images = added_from_results + added_from_list
+            total_tables = added_tables_from_results + added_tables_from_list
+            
+            if total_images > 0:
+                logger.info(f"Page {page_num}: Added {total_images} images")
+            if total_tables > 0:
+                logger.info(f"Page {page_num}: Added {total_tables} tables")
             
             # Add page break between pages (except last page)
             if page_idx < len(pages_data) - 1:
@@ -326,6 +467,152 @@ class WordExporter:
         
         doc.save(output_path)
         print(f"Saved {len(pages_data)} pages to: {output_path}")
+        return output_path
+
+    
+
+    def markdown_to_word(self, markdown_text, output_path="output.docx", images=None):
+        """
+        Convert markdown text to Word document with native tables and formatting.
+        """
+        doc = Document()
+        
+        # --- Helper: Image Lookup ---
+        image_map = {img.get('image_id', ''): img for img in images} if images else {}
+
+        # --- Helper: Apply formatting (Bold/Italic) ---
+        def add_formatted_text(paragraph, text):
+            # Split text by bold (**...**) and italic (*...*) markers
+            # The regex keeps the delimiters in the list so we can identify them
+            parts = re.split(r'(\*\*.*?\*\*|\*.*?\*)', text)
+            
+            for part in parts:
+                if not part:
+                    continue
+                
+                run = paragraph.add_run()
+                if part.startswith('**') and part.endswith('**'):
+                    run.text = part[2:-2]
+                    run.font.bold = True
+                elif part.startswith('*') and part.endswith('*'):
+                    run.text = part[1:-1]
+                    run.font.italic = True
+                else:
+                    run.text = part
+                    
+        # --- Helper: Process Image Placeholder ---
+        def process_image_placeholder(line):
+            match = re.search(r'\[IMAGE_PLACEHOLDER_(\d+)\]', line)
+            if match:
+                img_num = match.group(1)
+                img_id = f'img_{img_num}'
+                if img_id in image_map:
+                    self.add_image_to_document(doc, image_map[img_id])
+                else:
+                    p = doc.add_paragraph()
+                    run = p.add_run(f"[IMAGE {img_num}]")
+                    run.font.italic = True
+                    run.font.color.rgb = RGBColor(128, 128, 128)
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                return True
+            return False
+
+        # --- Main Parsing Loop ---
+        lines = markdown_text.split('\n')
+        table_buffer = [] # To store table rows temporarily
+        in_table = False
+        
+        for i, line in enumerate(lines):
+            clean_line = line.strip()
+            
+            # 1. Handle Table Logic
+            if clean_line.startswith('|'):
+                # It's a table row
+                if not in_table:
+                    # Check if the NEXT line is a separator (|---|) to confirm it's a header
+                    if i + 1 < len(lines) and '---' in lines[i+1]:
+                        in_table = True
+                        table_buffer = [line] # Start buffer
+                        continue # Skip processing this line as normal text
+                else:
+                    # If we are already in a table, just add the line
+                    # Ignore the separator line (e.g. |---|---|)
+                    if '---' in line:
+                        continue 
+                    table_buffer.append(line)
+                    continue
+            
+            # If we were in a table, but this line is NOT a table line (or empty)
+            if in_table:
+                # Render the buffered table now
+                if table_buffer:
+                    # Calculate rows and columns
+                    rows_data = [[cell.strip() for cell in row.strip('|').split('|')] for row in table_buffer]
+                    num_rows = len(rows_data)
+                    num_cols = len(rows_data[0]) if rows_data else 0
+                    
+                    if num_rows > 0 and num_cols > 0:
+                        table = doc.add_table(rows=num_rows, cols=num_cols)
+                        table.style = 'Table Grid'
+                        
+                        for r_idx, row_data in enumerate(rows_data):
+                            row_cells = table.rows[r_idx].cells
+                            for c_idx, cell_text in enumerate(row_data):
+                                if c_idx < len(row_cells):
+                                    # Add text to cell (handling bold/italic inside cell)
+                                    p = row_cells[c_idx].paragraphs[0]
+                                    add_formatted_text(p, cell_text)
+                
+                # Reset table state
+                in_table = False
+                table_buffer = []
+                
+                # If this current line was empty, we are done with the table. 
+                if not clean_line:
+                    continue
+
+            # 2. Handle Images
+            if '[IMAGE_PLACEHOLDER_' in line:
+                if process_image_placeholder(line):
+                    continue
+
+            # 3. Skip empty lines (outside of tables)
+            if not clean_line:
+                continue
+
+            # 4. Handle Headings
+            if line.startswith('#'):
+                level = len(line.split(' ')[0]) # Count hashes
+                text = line[level:].strip()
+                if 1 <= level <= 4:
+                    p = doc.add_paragraph()
+                    add_formatted_text(p, text) # Support bold in headers
+                    # Basic Styling based on level
+                    run = p.runs[0] # Apply size to first run or loop all
+                    p.style = f'Heading {level}'
+                continue
+
+            # 5. Handle Lists
+            if line.strip().startswith(('- ', '* ')):
+                p = doc.add_paragraph(style='List Bullet')
+                text = line.strip()[2:]
+                add_formatted_text(p, text)
+                p.paragraph_format.left_indent = Pt(20)
+                continue
+                
+            elif re.match(r'^\s*\d+\.\s', line):
+                # Numbered list
+                text = re.sub(r'^\s*\d+\.\s', '', line)
+                p = doc.add_paragraph(style='List Number')
+                add_formatted_text(p, text)
+                p.paragraph_format.left_indent = Pt(20)
+                continue
+
+            # 6. Regular Paragraph
+            p = doc.add_paragraph()
+            add_formatted_text(p, line)
+
+        doc.save(output_path)
         return output_path
 
 if __name__ == "__main__":

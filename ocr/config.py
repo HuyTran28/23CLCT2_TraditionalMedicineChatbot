@@ -9,26 +9,18 @@ OUTPUT_DIR = "./ocr/output"          # Output folder for Word files
 
 # Processing Configuration
 AUTO_DETECT = True               # Auto-detect digital vs scanned PDFs
-ENABLE_PREPROCESSING = True      # Enable image enhancement for scanned docs
+ENABLE_PREPROCESSING = False     # Disabled - marker-pdf handles preprocessing internally
 DPI = 300                        # Resolution for PDF to image conversion (150-600)
 
 # OCR Configuration
-# Set to 'cpu' for local Windows environment; change to 'cuda' on Colab with GPU
-OCR_DEVICE = "cpu"
-CRAFT_TEXT_THRESHOLD = 0.7       # CRAFT text detection threshold (0.0-1.0)
-CRAFT_LINK_THRESHOLD = 0.8       # CRAFT link detection threshold (0.0-1.0)
-Y_THRESHOLD = 10                 # Line grouping threshold (pixels)
-
-# Preprocessing Configuration
-MAX_DESKEW_ANGLE = 15.0          # Maximum angle for deskewing (degrees)
-CLIP_LIMIT = 3.0                 # CLAHE clip limit for contrast enhancement
-TILE_GRID_SIZE = 8               # CLAHE tile grid size
-SHARPEN_STRENGTH = 1.5           # Sharpening strength
+# marker-pdf automatically detects and uses GPU if available, otherwise uses CPU
+MARKER_EXTRACT_IMAGES = True    # Extract images and formulas to separate directory
+MARKER_OUTPUT_FORMAT = "markdown"  # Output format: markdown
 
 # Export Configuration
 BASE_SPACING = 1.0               # Base line spacing in Word output
 FONT_SIZE = 12                   # Font size in Word output (points)
-SAVE_JSON = True                 # Save intermediate JSON results
+SAVE_JSON = False                # Save intermediate JSON results (markdown is saved instead)
 
 # Logging Configuration
 LOG_LEVEL = logging.INFO         # Logging level
@@ -40,4 +32,4 @@ CONTINUE_ON_ERROR = True         # Continue batch processing if one file fails
 
 # Performance
 CLEANUP_TEMP = True              # Automatically cleanup temp files after processing
-PARALLEL_PAGES = False           # Process pages in parallel (experimental)
+PARALLEL_PAGES = False           # marker-pdf handles parallelization internally
