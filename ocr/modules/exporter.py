@@ -559,9 +559,18 @@ class WordExporter:
                             row_cells = table.rows[r_idx].cells
                             for c_idx, cell_text in enumerate(row_data):
                                 if c_idx < len(row_cells):
-                                    # Add text to cell (handling bold/italic inside cell)
+                                    # Convert HTML <br> tags to proper line breaks
+                                    cell_text = cell_text.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                                    
+                                    # Split by newlines and add as separate paragraphs for proper line breaks
+                                    lines_in_cell = cell_text.split('\n')
                                     p = row_cells[c_idx].paragraphs[0]
-                                    add_formatted_text(p, cell_text)
+                                    add_formatted_text(p, lines_in_cell[0])
+                                    
+                                    # Add additional lines as new paragraphs
+                                    for cell_line in lines_in_cell[1:]:
+                                        new_p = row_cells[c_idx].add_paragraph()
+                                        add_formatted_text(new_p, cell_line)
                 
                 # Reset table state
                 in_table = False
@@ -608,9 +617,25 @@ class WordExporter:
                 p.paragraph_format.left_indent = Pt(20)
                 continue
 
-            # 6. Regular Paragraph
-            p = doc.add_paragraph()
-            add_formatted_text(p, line)
+            # 6. Handle break tags (skip them as they're document structure markers)
+            if clean_line == '</break>':
+                # Page/section break handling - could add a page break here if needed
+                continue
+            
+            # 7. Handle HTML <br> tags in regular paragraphs
+            if '<br>' in line or '<br/>' in line or '<br />' in line:
+                line = line.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
+                # Split by newlines and add as paragraph with internal line breaks
+                p = doc.add_paragraph()
+                lines_in_para = line.split('\n')
+                for idx, para_line in enumerate(lines_in_para):
+                    if idx > 0:
+                        p.add_run('\n')  # Line break within paragraph
+                    add_formatted_text(p, para_line)
+            else:
+                # Regular Paragraph
+                p = doc.add_paragraph()
+                add_formatted_text(p, line)
 
         doc.save(output_path)
         return output_path

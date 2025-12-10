@@ -111,8 +111,6 @@ def main():
         help="Enable FREE spelling correction for OCR output (no API costs!)"
     )
     
-    
-
     args = parser.parse_args()
 
     # CLI arguments always take precedence over config values.
