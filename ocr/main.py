@@ -22,7 +22,7 @@ def check_ocr_dependencies():
     except ImportError:
         missing.append("marker-pdf")
     if missing:
-        print("❌ Missing required libraries:")
+        print("Missing required libraries:")
         for lib in missing:
             print(f"   - {lib}")
         print("\nInstall missing libraries with:")
@@ -132,12 +132,12 @@ def main():
         input_arg = cfg.INPUT_DIR
 
     if input_arg is None:
-        print("❌ No input path provided. Pass --input or set INPUT_DIR in config.py")
+        print("No input path provided. Pass --input or set INPUT_DIR in config.py")
         sys.exit(1)
 
     input_path = Path(input_arg)
     if not input_path.exists():
-        print(f"❌ Input path does not exist: {input_path}")
+        print(f"Input path does not exist: {input_path}")
         sys.exit(1)
 
 
@@ -184,9 +184,8 @@ def main():
     mode = None if args.mode == "auto" else args.mode
 
     try:
-        # Disallow batch processing / directories — process one PDF at a time only
         if args.batch or input_path.is_dir():
-            print("❌ Batch processing is disabled. Provide a single PDF file as --input.")
+            print("Batch processing is disabled. Provide a single PDF file as --input.")
             print("   To process multiple files, run the script separately for each PDF.")
             sys.exit(1)
 
@@ -194,13 +193,32 @@ def main():
         pipeline.max_workers = args.workers
 
         # Single file processing
-        print(f"\n📄 Processing: {input_path.name}")
+        print(f"\nProcessing: {input_path.name}")
         output_path = pipeline.process_pdf(input_path, mode=mode)
-        print(f"\n✓ Success! Output saved to: {output_path}")
+        print(f"\nSuccess! Output saved to: {output_path}")
+        
+        # Display metrics summary
+        print(pipeline.metrics.get_formatted_summary())
+        
+        # Save metrics to JSON
+        metrics_path = pipeline.metrics.save_metrics_json()
+        print(f"Metrics saved to: {metrics_path}")
+        
+        # Display organized images info
+        images_dir = pipeline.images_output_dir
+        if images_dir.exists():
+            image_files = list(images_dir.glob("*.png"))
+            print(f"\nExtracted images organized in: {images_dir}/")
+            print(f"   Total images: {len(image_files)}")
+            
+            # Show image index
+            index_path = Path(args.output) / "images_index.json"
+            if index_path.exists():
+                print(f"   Image mapping: {index_path}")
         
         # Generate EasyDataset format if requested
         if args.easydataset:
-            print("\n📊 Generating EasyDataset format...")
+            print("\nGenerating EasyDataset format...")
             from modules.easydataset_processor import EasyDatasetProcessor
             
             processor = EasyDatasetProcessor(chunk_size=512, overlap=50)
@@ -221,14 +239,14 @@ def main():
                 retrieval_path = Path(args.output) / f"{input_path.stem}_retrieval.json"
                 processor.export_for_retrieval(dataset, retrieval_path)
                 
-                print(f"  ✓ EasyDataset format: {easydataset_path}")
-                print(f"  ✓ Q&A format: {qa_path}")
-                print(f"  ✓ Retrieval format: {retrieval_path}")
+                print(f"EasyDataset format: {easydataset_path}")
+                print(f"Q&A format: {qa_path}")
+                print(f"Retrieval format: {retrieval_path}")
             else:
-                print(f"  ⚠ OCR results JSON not found: {json_path}")
+                print(f"OCR results JSON not found: {json_path}")
 
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

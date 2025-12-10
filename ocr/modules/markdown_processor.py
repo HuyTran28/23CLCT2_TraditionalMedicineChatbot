@@ -86,10 +86,10 @@ class MarkdownProcessor:
         """
         # If correction disabled, return original
         if not self.use_llm_correction:
-            logger.info("Spelling correction disabled, skipping...")
+            # logger.info("Spelling correction disabled, skipping...")
             return markdown_text
 
-        logger.info("Fixing spelling errors using huggingface (FREE method)...")
+        # logger.info("Fixing spelling errors using huggingface (FREE method)...")
 
         try:
             # Only HuggingFace-based correction is supported
@@ -110,14 +110,14 @@ class MarkdownProcessor:
         2. Preserve markdown structure, images, and special tags
         3. Process in smaller chunks to maintain context
         """
-        logger.info("Using Vietnamese spell-checker for correction...")
+        # logger.info("Using Vietnamese spell-checker for correction...")
         
         # Try using underthesea or pyvi for Vietnamese spell-checking
         try:
             # First, try underthesea (more reliable for Vietnamese)
             try:
                 from underthesea import word_tokenize
-                logger.info("Using underthesea for Vietnamese text processing...")
+                # logger.info("Using underthesea for Vietnamese text processing...")
                 return self._fix_with_underthesea(markdown_text)
             except ImportError:
                 logger.debug("underthesea not available, trying pyvi...")
@@ -126,7 +126,7 @@ class MarkdownProcessor:
             # Fallback to pyvi
             try:
                 from pyvi import ViTokenizer
-                logger.info("Using pyvi for Vietnamese text processing...")
+                # logger.info("Using pyvi for Vietnamese text processing...")
                 return self._fix_with_pyvi(markdown_text)
             except ImportError:
                 logger.debug("pyvi not available, trying basic correction...")
@@ -134,7 +134,7 @@ class MarkdownProcessor:
             
             # Last resort: basic pattern-based correction
             logger.warning("No Vietnamese NLP library found. Using basic correction...")
-            logger.info("Install for better results: pip install underthesea pyvi")
+            # logger.info("Install for better results: pip install underthesea pyvi")
             return self._basic_vietnamese_correction(markdown_text)
             
         except Exception as e:
@@ -418,28 +418,75 @@ class MarkdownProcessor:
     def process(self, markdown_text: str, images: list = None) -> str:
         """
         Full post-processing pipeline:
-        1. Insert section breaks
-        2. Fix spelling with LLM
+        1. Insert image IDs for mapping
+        2. Insert section breaks
+        3. Fix spelling with LLM
         
         Args:
             markdown_text: Input markdown text
-            images: List of image references
+            images: List of image references with IDs
             
         Returns:
-            Processed markdown text
+            Processed markdown text with image IDs
         """
-        logger.info("Starting markdown post-processing...")
+        # logger.info("Starting markdown post-processing...")
+        
+        # Step 0: Inject image IDs into markdown
+        if images:
+            # logger.info("Step 0: Injecting image IDs into markdown...")
+            markdown_text = self._inject_image_ids(markdown_text, images)
         
         # Step 1: Insert section breaks
-        logger.info("Step 1: Inserting section breaks for level-2 headings...")
+        # logger.info("Step 1: Inserting section breaks for level-2 headings...")
         markdown_text = self.insert_section_breaks(markdown_text)
         
         # Step 2: Fix spelling with LLM
         if self.use_llm_correction:
-            logger.info("Step 2: Fixing spelling errors with LLM...")
+            # logger.info("Step 2: Fixing spelling errors with LLM...")
             markdown_text = self.fix_spelling_with_llm(markdown_text, images)
-        else:
-            logger.info("Step 2: Skipping LLM correction (disabled)")
         
-        logger.info("✓ Markdown post-processing complete")
+        # logger.info("Markdown post-processing complete")
         return markdown_text
+    
+    def _inject_image_ids(self, markdown_text: str, images: list = None) -> str:
+        """
+        Inject unique image IDs into markdown for mapping to extracted images
+        
+        Args:
+            markdown_text: Input markdown text
+            images: List of image data with 'image_id' field
+            
+        Returns:
+            Markdown text with image IDs injected as references
+        """
+        if not images:
+            return markdown_text
+        
+        # Create mapping of image IDs
+        image_map = {}
+        for img in images:
+            if 'image_id' in img:
+                # Track the image ID for this image reference
+                original_key = img.get('original_key', img.get('image_id'))
+                image_map[original_key] = img['image_id']
+        
+        # Replace image placeholders with ID-mapped references
+        result = markdown_text
+        for original_key, image_id in image_map.items():
+            # Find all placeholders
+            placeholders = re.findall(r'\[IMAGE_PLACEHOLDER_\d+\]', result)
+            
+            # Replace placeholders with image ID references
+            for idx, placeholder in enumerate(placeholders, 1):
+                if idx <= len(images):
+                    img = images[idx - 1]
+                    image_id = img.get('image_id', f'img_{idx}')
+                    
+                    # Create a markdown reference with image ID
+                    # Format: ![id: <image_id>](<image_id>.png)
+                    image_reference = f"![id: {image_id}]({image_id}.png)"
+                    result = result.replace(placeholder, image_reference, 1)
+                    
+                    logger.debug(f"Injected image ID: {image_id} at placeholder {placeholder}")
+        
+        return result

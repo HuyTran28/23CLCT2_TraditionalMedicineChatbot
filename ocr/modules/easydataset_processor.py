@@ -60,11 +60,11 @@ class EasyDatasetProcessor:
         with open(ocr_json_path, "r", encoding="utf-8") as f:
             ocr_data = json.load(f)
         
-        logger.info(f"Processing OCR results from {ocr_json_path.name}")
+        # logger.info(f"Processing OCR results from {ocr_json_path.name}")
         
         # Extract sections using </break> markers
         sections = self._extract_sections(ocr_data)
-        logger.info(f"Extracted {len(sections)} sections from document")
+        # logger.info(f"Extracted {len(sections)} sections from document")
         
         # Create dataset entries
         dataset_entries = []
@@ -89,7 +89,7 @@ class EasyDatasetProcessor:
             output_path = Path(output_path)
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(dataset, f, ensure_ascii=False, indent=2)
-            logger.info(f"✓ Saved EasyDataset format to: {output_path}")
+            # logger.info(f"Saved EasyDataset format to: {output_path}")
         
         return dataset
     
@@ -311,7 +311,7 @@ class EasyDatasetProcessor:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(qa_data, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"✓ Exported {len(qa_data['passages'])} passages for Q&A generation: {output_path}")
+        # logger.info(f"Exported {len(qa_data['passages'])} passages for Q&A generation: {output_path}")
         return output_path
     
     def export_for_retrieval(
@@ -353,7 +353,7 @@ class EasyDatasetProcessor:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(retrieval_data, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"✓ Exported {len(retrieval_data['documents'])} documents for retrieval: {output_path}")
+        # logger.info(f"✓ Exported {len(retrieval_data['documents'])} documents for retrieval: {output_path}")
         return output_path
 
 

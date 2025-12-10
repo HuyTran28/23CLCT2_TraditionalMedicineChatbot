@@ -111,7 +111,7 @@ class DigitalParser:
                 "Please use OCR pipeline or set force=True."
             )
 
-        logger.info("Converting PDF (digital) → DOCX: %s", pdf_path)
+        # logger.info("Converting PDF (digital) → DOCX: %s", pdf_path)
         cv = None
         try:
             cv = Converter(str(pdf_path))
@@ -119,7 +119,7 @@ class DigitalParser:
             e = None if end is None else int(end)
 
             cv.convert(str(docx_path), start=s, end=e)
-            logger.info("Successfully converted → %s", docx_path)
+            # logger.info("Successfully converted → %s", docx_path)
             return docx_path
 
         except Exception as e:

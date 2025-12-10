@@ -313,8 +313,8 @@ class WordExporter:
                 for img_item in image_items:
                     if self.add_image_to_document(doc, img_item):
                         added_count += 1
-                if added_count > 0:
-                    logger.info(f"Added {added_count}/{len(image_items)} images for page {page_id}")
+                # if added_count > 0:
+                #     logger.info(f"Added {added_count}/{len(image_items)} images for page {page_id}")
             
             # Add tables for this page
             if table_items:
@@ -322,8 +322,8 @@ class WordExporter:
                 for tbl_item in table_items:
                     if self.add_table_to_document(doc, tbl_item):
                         added_count += 1
-                if added_count > 0:
-                    logger.info(f"Added {added_count}/{len(table_items)} tables for page {page_id}")
+                # if added_count > 0:
+                #     logger.info(f"Added {added_count}/{len(table_items)} tables for page {page_id}")
 
             if page_index < len(pages) - 1:
                 doc.add_page_break()
@@ -456,10 +456,10 @@ class WordExporter:
             total_images = added_from_results + added_from_list
             total_tables = added_tables_from_results + added_tables_from_list
             
-            if total_images > 0:
-                logger.info(f"Page {page_num}: Added {total_images} images")
-            if total_tables > 0:
-                logger.info(f"Page {page_num}: Added {total_tables} tables")
+            # if total_images > 0:
+            #     logger.info(f"Page {page_num}: Added {total_images} images")
+            # if total_tables > 0:
+            #     logger.info(f"Page {page_num}: Added {total_tables} tables")
             
             # Add page break between pages (except last page)
             if page_idx < len(pages_data) - 1:

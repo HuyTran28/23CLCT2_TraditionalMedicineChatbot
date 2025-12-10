@@ -15,6 +15,7 @@ from .pdf_converter import PDFConverter
 from .ocr_engine import OCREngine
 from .exporter import WordExporter
 from .markdown_processor import MarkdownProcessor
+from .metrics import PipelineMetrics
  
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,10 @@ class OCRPipeline:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         
+        # Create images output folder
+        self.images_output_dir = self.output_dir / "extracted_images"
+        self.images_output_dir.mkdir(parents=True, exist_ok=True)
+        
         # Initialize modules
         self.digital_parser = DigitalParser()
         self.pdf_converter = PDFConverter(dpi=dpi)
@@ -79,6 +84,9 @@ class OCRPipeline:
         self.markdown_processor = MarkdownProcessor(
             use_llm_correction=use_llm_correction
         )
+        
+        # Initialize metrics tracker
+        self.metrics = PipelineMetrics(output_dir=self.output_dir)
         
     
     def process_pdf(
@@ -98,38 +106,55 @@ class OCRPipeline:
         Returns:
             Path to output DOCX file
         """
-        pdf_path = Path(pdf_path)
-        if not pdf_path.exists():
-            raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        self.metrics.start_processing()
         
-        # Determine output path
-        if output_path is None:
-            output_path = self.output_dir / f"{pdf_path.stem}.docx"
-        output_path = Path(output_path)
-        
-        # Auto-detect mode if not specified
-        if mode is None and self.auto_detect:
-            is_digital = self.digital_parser.is_digital_pdf(pdf_path)
-            mode = "digital" if is_digital else "scan"
-            logger.info(f"Auto-detected mode: {mode}")
-        elif mode is None:
-            mode = "scan"  # Default to scan if auto-detect disabled
-        
-        # Process based on mode
-        if mode == "digital":
-            logger.info(f"Processing as digital PDF: {pdf_path.name}")
-            return self._process_digital(pdf_path, output_path)
-        elif mode == "scan":
-            logger.info(f"Processing as scanned PDF: {pdf_path.name}")
-            return self._process_scanned(pdf_path, output_path)
-        else:
-            raise ValueError(f"Unknown mode: {mode}")
+        try:
+            pdf_path = Path(pdf_path)
+            if not pdf_path.exists():
+                raise FileNotFoundError(f"PDF not found: {pdf_path}")
+            
+            # Track input file
+            self.metrics.add_file_processed(pdf_path)
+            
+            # Determine output path
+            if output_path is None:
+                output_path = self.output_dir / f"{pdf_path.stem}.docx"
+            output_path = Path(output_path)
+            
+            # Auto-detect mode if not specified
+            if mode is None and self.auto_detect:
+                is_digital = self.digital_parser.is_digital_pdf(pdf_path)
+                mode = "digital" if is_digital else "scan"
+                # logger.info(f"Auto-detected mode: {mode}")
+            elif mode is None:
+                mode = "scan"  # Default to scan if auto-detect disabled
+            
+            # Process based on mode
+            if mode == "digital":
+                # logger.info(f"Processing as digital PDF: {pdf_path.name}")
+                result = self._process_digital(pdf_path, output_path)
+            elif mode == "scan":
+                # logger.info(f"Processing as scanned PDF: {pdf_path.name}")
+                result = self._process_scanned(pdf_path, output_path)
+            else:
+                raise ValueError(f"Unknown mode: {mode}")
+            
+            # Update metrics with output file sizes
+            self.metrics.set_output_files_size(docx_path=output_path)
+            self.metrics.end_processing()
+            
+            return result
+            
+        except Exception as e:
+            self.metrics.add_error(str(e))
+            self.metrics.end_processing()
+            raise
     
     def _process_digital(self, pdf_path: Path, output_path: Path) -> Path:
         """Process digital PDF using pdf2docx"""
         try:
             self.digital_parser.convert(pdf_path, output_path)
-            logger.info(f"✓ Digital conversion complete: {output_path}")
+            # logger.info(f"Digital conversion complete: {output_path}")
             return output_path
         except Exception as e:
             logger.error(f"Digital conversion failed: {e}")
@@ -140,39 +165,146 @@ class OCRPipeline:
         
         try:
             # Step 1: Use marker-pdf to process the entire PDF
-            logger.info("Step 1: Processing PDF with marker-pdf...")
+            # logger.info("Step 1: Processing PDF with marker-pdf...")
             marker_result = self.ocr_engine.process_pdf(pdf_path)
             
-            # Step 2: Extract any additional images if needed (marker-pdf handles most)
-            logger.info(f"✓ Extracted {len(marker_result['images'])} images/formulas")
+            # Step 2: Extract and organize images
+            # logger.info(f"Extracted {len(marker_result['images'])} images/formulas")
+            organized_images = self._organize_extracted_images(
+                marker_result['images'],
+                pdf_path
+            )
+            self.metrics.add_images_extracted([img['output_path'] for img in organized_images])
             
-            # Step 3: Post-process markdown (insert breaks, fix spelling)
-            logger.info("Step 3: Post-processing markdown...")
+            # Step 3: Post-process markdown with image IDs
+            # logger.info("Step 3: Post-processing markdown with image mapping...")
             processed_markdown = self.markdown_processor.process(
                 marker_result['markdown'],
-                images=marker_result['images']
+                images=organized_images
             )
             
-            # Step 4: Save processed markdown
+            # Step 4: Count lines in processed markdown
+            line_count = len(processed_markdown.split('\n'))
+            sample_count = self._count_samples(processed_markdown, organized_images)
+            self.metrics.set_line_count(line_count)
+            self.metrics.set_sample_count(sample_count)
+            
+            # Step 5: Save processed markdown
             markdown_path = self.output_dir / f"{pdf_path.stem}_ocr_results.md"
             with open(markdown_path, "w", encoding="utf-8") as f:
                 f.write(processed_markdown)
-            logger.info(f"✓ Saved processed markdown: {markdown_path}")
+            # logger.info(f"Saved processed markdown: {markdown_path}")
+            self.metrics.set_output_files_size(markdown_path=markdown_path)
             
-            # Step 5: Export to DOCX
-            logger.info("Step 5: Converting markdown to Word document...")
+            # Step 6: Export to DOCX
+            # logger.info("Step 6: Converting markdown to Word document...")
             self.exporter.markdown_to_word(
                 processed_markdown,
                 str(output_path),
-                images=marker_result['images']
+                images=organized_images
             )
-            logger.info(f"✓ OCR processing complete: {output_path}")
+            # logger.info(f"OCR processing complete: {output_path}")
             
             return output_path
             
         except Exception as e:
             logger.error(f"Marker-pdf processing failed: {e}")
+            self.metrics.add_error(f"Scanned processing: {str(e)}")
             raise
+    
+    def _organize_extracted_images(self, images: List[Dict[str, Any]], 
+                                   pdf_path: Path) -> List[Dict[str, Any]]:
+        """
+        Organize extracted images into output folder with distinct IDs
+        
+        Args:
+            images: List of extracted image data
+            pdf_path: Path to source PDF
+        
+        Returns:
+            List of images with organized paths and IDs
+        """
+        organized_images = []
+        
+        for idx, image in enumerate(images, 1):
+            try:
+                original_path = Path(image.get('file_path', ''))
+                
+                if not original_path.exists():
+                    logger.warning(f"Image file not found: {original_path}")
+                    continue
+                
+                # Create unique image ID mapping to this image
+                image_id = f"{pdf_path.stem}_img_{idx:03d}"
+                
+                # Copy image to organized output folder
+                output_filename = f"{image_id}.png"
+                output_path = self.images_output_dir / output_filename
+                
+                shutil.copy2(original_path, output_path)
+                
+                # Update image data with organized path and ID
+                organized_image = image.copy()
+                organized_image['output_path'] = str(output_path)
+                organized_image['image_id'] = image_id
+                organized_image['original_file_path'] = str(original_path)
+                
+                organized_images.append(organized_image)
+                logger.debug(f"Organized image {idx}: {image_id} -> {output_filename}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to organize image {idx}: {e}")
+                self.metrics.add_error(f"Image organization: {str(e)}")
+                continue
+        
+        # Create index file mapping image IDs
+        index_path = self.output_dir / "images_index.json"
+        index_data = {
+            'source_pdf': str(pdf_path),
+            'output_folder': str(self.images_output_dir),
+            'total_images': len(organized_images),
+            'images': [
+                {
+                    'id': img['image_id'],
+                    'filename': img['output_path'].split('/')[-1] if '/' in img['output_path'] else img['output_path'].split('\\')[-1],
+                    'path': img['output_path']
+                }
+                for img in organized_images
+            ]
+        }
+        
+        with open(index_path, 'w', encoding='utf-8') as f:
+            json.dump(index_data, f, indent=2, ensure_ascii=False)
+        
+        # logger.info(f"Created image index: {index_path}")
+        
+        return organized_images
+    
+    def _count_samples(self, markdown_text: str, images: List[Dict[str, Any]]) -> int:
+        """
+        Count OCR samples/elements (text blocks, images, tables)
+        
+        Args:
+            markdown_text: Processed markdown text
+            images: List of extracted images
+        
+        Returns:
+            Total count of samples
+        """
+        # Count headings
+        import re
+        headings = len(re.findall(r'^#+\s', markdown_text, re.MULTILINE))
+        
+        # Count paragraphs (non-empty lines between blank lines)
+        lines = [l.strip() for l in markdown_text.split('\n') if l.strip()]
+        
+        # Count tables
+        tables = markdown_text.count('\n|')
+        
+        # Total samples
+        total_samples = headings + len(lines) + tables + len(images)
+        
+        return total_samples
     
     def process_batch(
         self,
@@ -200,13 +332,13 @@ class OCRPipeline:
             logger.warning(f"No PDF files found in {input_dir}")
             return []
         
-        logger.info(f"Found {len(pdf_files)} PDF files to process")
+        # logger.info(f"Found {len(pdf_files)} PDF files to process")
         results = []
         
         for idx, pdf_path in enumerate(pdf_files, start=1):
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Processing file {idx}/{len(pdf_files)}: {pdf_path.name}")
-            logger.info(f"{'='*60}")
+            # logger.info(f"\n{'='*60}")
+            # logger.info(f"Processing file {idx}/{len(pdf_files)}: {pdf_path.name}")
+            # logger.info(f"{'='*60}")
             
             try:
                 output_path = self.process_pdf(pdf_path, mode=mode)
@@ -226,92 +358,8 @@ class OCRPipeline:
         
         # Summary
         success_count = sum(1 for r in results if r["status"] == "success")
-        logger.info(f"\n{'='*60}")
-        logger.info(f"Batch processing complete: {success_count}/{len(results)} successful")
-        logger.info(f"{'='*60}")
+        # logger.info(f"\n{'='*60}")
+        # logger.info(f"Batch processing complete: {success_count}/{len(results)} successful")
+        # logger.info(f"{'='*60}")
         
         return results
-    
-    def _filter_overlapping_tables_and_images(
-        self,
-        tables: List[Dict[str, Any]],
-        images: List[Dict[str, Any]],
-        overlap_threshold: float = 0.5
-    ) -> List[Dict[str, Any]]:
-        """
-        Filter out tables that significantly overlap with detected images.
-        Images are more reliably detected, so we prefer keeping images over tables in case of overlap.
-        
-        Args:
-            tables: List of detected tables with bbox
-            images: List of detected images with bbox
-            overlap_threshold: IoU threshold to consider overlap (0.5 = 50% overlap)
-        
-        Returns:
-            Filtered list of tables with overlapping ones removed
-        """
-        filtered_tables = []
-        
-        for table in tables:
-            table_bbox = table.get('bbox')
-            page_num = table.get('page_num')
-            
-            if not table_bbox:
-                filtered_tables.append(table)
-                continue
-            
-            # Check overlap with all images on the same page
-            overlaps_with_image = False
-            for image in images:
-                if image.get('page_num') != page_num:
-                    continue
-                
-                image_bbox = image.get('bbox')
-                if not image_bbox:
-                    continue
-                
-                # Calculate Intersection over Union (IoU)
-                iou = self._calculate_iou(table_bbox, image_bbox)
-                
-                if iou > overlap_threshold:
-                    logger.debug(f"Table {table.get('table_id', 'unknown')} overlaps with "
-                               f"image {image.get('image_id', 'unknown')} (IoU: {iou:.2f})")
-                    overlaps_with_image = True
-                    break
-            
-            if not overlaps_with_image:
-                filtered_tables.append(table)
-        
-        return filtered_tables
-    
-    def _calculate_iou(self, bbox1: List[float], bbox2: List[float]) -> float:
-        """
-        Calculate Intersection over Union (IoU) between two bounding boxes.
-        
-        Args:
-            bbox1: [x0, y0, x1, y1]
-            bbox2: [x0, y0, x1, y1]
-        
-        Returns:
-            IoU score (0-1)
-        """
-        # Calculate intersection
-        x1 = max(bbox1[0], bbox2[0])
-        y1 = max(bbox1[1], bbox2[1])
-        x2 = min(bbox1[2], bbox2[2])
-        y2 = min(bbox1[3], bbox2[3])
-        
-        if x2 < x1 or y2 < y1:
-            return 0.0  # No overlap
-        
-        intersection_area = (x2 - x1) * (y2 - y1)
-        
-        # Calculate union
-        bbox1_area = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
-        bbox2_area = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
-        union_area = bbox1_area + bbox2_area - intersection_area
-        
-        if union_area == 0:
-            return 0.0
-        
-        return intersection_area / union_area

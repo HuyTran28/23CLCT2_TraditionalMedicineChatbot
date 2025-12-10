@@ -37,12 +37,12 @@ class OCREngine:
             from marker.output import text_from_rendered
             
             # Initialize marker models
-            logger.info("Initializing marker-pdf models...")
+            # logger.info("Initializing marker-pdf models...")
             self.model_dict = create_model_dict()
             self.converter = PdfConverter(
                 artifact_dict=self.model_dict,
             )
-            logger.info("✓ Marker-pdf engine initialized successfully")
+            # logger.info("Marker-pdf engine initialized successfully")
             
         except ImportError as e:
             raise RuntimeError(
@@ -67,7 +67,7 @@ class OCREngine:
         if not pdf_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
         
-        logger.info(f"Processing PDF with marker-pdf: {pdf_path.name}")
+        # logger.info(f"Processing PDF with marker-pdf: {pdf_path.name}")
         
         try:
             from marker.converters.pdf import PdfConverter
@@ -123,8 +123,8 @@ class OCREngine:
             with open(markdown_path, 'w', encoding='utf-8') as f:
                 f.write(markdown_text)
             
-            logger.info(f"✓ Extracted {len(images_info)} images/formulas")
-            logger.info(f"✓ Saved markdown to: {markdown_path}")
+            logger.info(f"Extracted {len(images_info)} images/formulas")
+            # logger.info(f"Saved markdown to: {markdown_path}")
             
             return {
                 'markdown': markdown_text,
@@ -196,5 +196,5 @@ class OCREngine:
         Visualize OCR results on an image (for debugging).
         Note: marker-pdf doesn't use bounding boxes, so this is simplified.
         """
-        logger.info(f"Visualization not fully supported for marker-pdf engine")
+        # logger.info(f"Visualization not fully supported for marker-pdf engine")
         logger.info(f"Extracted {len(results)} text segments")
