@@ -559,8 +559,8 @@ class MarkdownProcessor:
         
         for line in lines:
             # Count unescaped markers
-            bold_count = len(re.findall(r'(?<!\\\)\*\*', line))
-            italic_count = len(re.findall(r'(?<!\\\)[*_]', line)) - (bold_count * 2)
+            bold_count = len(re.findall(r'(?<!\\)\*\*', line))
+            italic_count = len(re.findall(r'(?<!\\)[*_]', line)) - (bold_count * 2)
             
             # If we have odd number of bold markers, it's likely malformed
             if bold_count % 2 == 1:
