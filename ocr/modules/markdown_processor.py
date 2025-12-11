@@ -81,7 +81,7 @@ class MarkdownProcessor:
     
     def fix_spelling_with_llm(self, markdown_text: str, images: list = None) -> str:
         """
-        Fix spelling errors in Vietnamese markdown text using advanced LLM methods.
+        Fix spelling errors in Vietnamese markdown text using a hybrid, transformer-free approach.
         Preserves image placeholders, tables, markdown structure, LaTeX math, and HTML tags.
         """
         # If correction disabled, return original
@@ -92,8 +92,8 @@ class MarkdownProcessor:
             # Protect special elements before correction
             protected_text, protection_map = self._protect_special_elements(markdown_text)
             
-            # Try advanced LLM correction methods in order of preference
-            corrected_text = self._fix_with_advanced_llm(protected_text)
+            # Try hybrid correction methods in order of preference (no transformers)
+            corrected_text = self._fix_with_hybrid_correction(protected_text)
             
             # Restore protected elements
             final_text = self._restore_protected_elements(corrected_text, protection_map)
@@ -204,36 +204,20 @@ class MarkdownProcessor:
             result = result.replace(placeholder, original)
         return result
     
-    def _fix_with_advanced_llm(self, text: str) -> str:
+    def _fix_with_hybrid_correction(self, text: str) -> str:
         """
-        Use advanced LLM-based correction with transformer models.
-        Falls back to simpler methods if transformers are unavailable.
+        Hybrid correction without transformers: underthesea -> pyvi -> pattern-based.
         """
+        # Vietnamese NLP libraries first
         try:
-            # Try using transformers library for advanced correction
-            from transformers import pipeline
-            logger.info("Attempting advanced LLM correction with transformers...")
-            
-            # Try to use a Vietnamese spell correction model
-            try:
-                corrector = pipeline("text2text-generation", model="VietAI/vit5-base")
-                return self._correct_with_transformer(text, corrector)
-            except Exception as e:
-                logger.debug(f"Transformer model not available: {e}")
-                pass
-        except ImportError:
-            logger.debug("Transformers library not available")
-        
-        # Fallback to Vietnamese NLP libraries
-        try:
-            from underthesea import word_tokenize
+            from underthesea import word_tokenize  # noqa: F401
             logger.info("Using underthesea for Vietnamese text processing...")
             return self._fix_with_underthesea(text)
         except ImportError:
             logger.debug("underthesea not available")
         
         try:
-            from pyvi import ViTokenizer
+            from pyvi import ViTokenizer  # noqa: F401
             logger.info("Using pyvi for Vietnamese text processing...")
             return self._fix_with_pyvi(text)
         except ImportError:
@@ -242,33 +226,6 @@ class MarkdownProcessor:
         # Final fallback: enhanced pattern-based correction
         logger.info("Using enhanced pattern-based correction...")
         return self._enhanced_pattern_correction(text)
-    
-    def _correct_with_transformer(self, text: str, corrector) -> str:
-        """
-        Use transformer model for spell correction.
-        Process text in chunks to avoid token limits.
-        """
-        # Split into sentences
-        sentences = re.split(r'([.!?]\s+)', text)
-        corrected_sentences = []
-        
-        for i in range(0, len(sentences), 2):
-            sentence = sentences[i]
-            separator = sentences[i+1] if i+1 < len(sentences) else ''
-            
-            if sentence.strip():
-                try:
-                    # Generate correction
-                    result = corrector(f"sửa lỗi: {sentence}", max_length=512, num_return_sequences=1)
-                    corrected = result[0]['generated_text'] if result else sentence
-                    corrected_sentences.append(corrected + separator)
-                except Exception as e:
-                    logger.debug(f"Error correcting sentence: {e}")
-                    corrected_sentences.append(sentence + separator)
-            else:
-                corrected_sentences.append(sentence + separator)
-        
-        return ''.join(corrected_sentences)
     
     def _enhanced_pattern_correction(self, text: str) -> str:
         """
