@@ -50,7 +50,7 @@ class OCREngine:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize marker-pdf engine: {e}")
 
-    def process_pdf(self, pdf_path, page_range=None):
+    def process_pdf(self, pdf_path, page_range=None, safe_mode=False):
         """
         Process a PDF file and extract text, images, and formulas.
         
@@ -71,9 +71,17 @@ class OCREngine:
             
             # Convert PDF to markdown
             rendered = self.converter(str(pdf_path))
+
+            if safe_mode:
+            # Escape toàn bộ markdown để tránh vỡ regex
+                import re
+                markdown_text = re.escape(rendered.markdown)
+            else:
+                markdown_text = rendered.markdown
+
             
             # Extract markdown text
-            markdown_text = rendered.markdown
+            # markdown_text = rendered.markdown
             
             # Process images and formulas
             images_info = []

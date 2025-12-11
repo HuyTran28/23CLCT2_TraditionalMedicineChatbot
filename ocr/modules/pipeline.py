@@ -161,7 +161,7 @@ class OCRPipeline:
         
         try:
             # Step 1: Use marker-pdf to process the entire PDF
-            marker_result = self.ocr_engine.process_pdf(pdf_path)
+            marker_result = self.ocr_engine.process_pdf(pdf_path, safe_mode=True)
             
             # Step 2: Extract and organize images
             organized_images = self._organize_extracted_images(
