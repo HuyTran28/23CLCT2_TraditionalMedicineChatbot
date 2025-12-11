@@ -474,34 +474,123 @@ class WordExporter:
     def markdown_to_word(self, markdown_text, output_path="output.docx", images=None):
         """
         Convert markdown text to Word document with native tables and formatting.
+        Properly handles markdown syntax including bold, italic, code, links, and more.
         """
         doc = Document()
         
         # --- Helper: Image Lookup ---
         image_map = {img.get('image_id', ''): img for img in images} if images else {}
 
-        # --- Helper: Apply formatting (Bold/Italic) ---
+        # --- Helper: Apply formatting (Bold/Italic/Code/Links/Subscript/Superscript/Math) ---
         def add_formatted_text(paragraph, text):
-            # Split text by bold (**...**) and italic (*...*) markers
-            # The regex keeps the delimiters in the list so we can identify them
-            parts = re.split(r'(\*\*.*?\*\*|\*.*?\*)', text)
+            """
+            Parse and apply markdown formatting to text:
+            - **bold** or __bold__
+            - *italic* or _italic_
+            - ***bold+italic***
+            - `code`
+            - [link text](url)
+            - <sub>subscript</sub>
+            - <sup>superscript</sup>
+            - $math$ (inline LaTeX)
+            """
+            # Process text sequentially, handling nested formatting
+            
+            # First, protect and convert LaTeX math and HTML tags
+            parts_to_process = [text]
+            final_parts = []
+            
+            # Pattern to match: LaTeX math, HTML sub/sup, or markdown formatting
+            # Priority order: LaTeX > HTML tags > Markdown
+            combined_pattern = r'(\$[^$\n]+\$|<sub>.*?</sub>|<sup>.*?</sup>|<[^>]+>|\*\*\*.*?\*\*\*|\*\*.*?\*\*|__.*?__|_.*?_|\*.*?\*|`.*?`|\[.*?\]\(.*?\))'
+            
+            parts = re.split(combined_pattern, text)
             
             for part in parts:
                 if not part:
                     continue
                 
                 run = paragraph.add_run()
-                if part.startswith('**') and part.endswith('**'):
+                
+                # LaTeX inline math $...$
+                if part.startswith('$') and part.endswith('$') and len(part) > 2:
+                    # Remove $ signs and render as italic with special formatting
+                    math_content = part[1:-1]
+                    run.text = math_content
+                    run.font.italic = True
+                    run.font.name = 'Cambria Math'
+                    run.font.color.rgb = RGBColor(0, 51, 102)
+                # Subscript <sub>...</sub>
+                elif part.startswith('<sub>') and part.endswith('</sub>'):
+                    subscript_text = part[5:-6]  # Remove <sub></sub>
+                    run.text = subscript_text
+                    run.font.subscript = True
+                    run.font.size = Pt(8)
+                # Superscript <sup>...</sup>
+                elif part.startswith('<sup>') and part.endswith('</sup>'):
+                    superscript_text = part[5:-6]  # Remove <sup></sup>
+                    run.text = superscript_text
+                    run.font.superscript = True
+                    run.font.size = Pt(8)
+                # Bold + Italic (*** or ___)
+                elif (part.startswith('***') and part.endswith('***') and len(part) > 6):
+                    run.text = part[3:-3]
+                    run.font.bold = True
+                    run.font.italic = True
+                # Bold (** or __)
+                elif (part.startswith('**') and part.endswith('**') and len(part) > 4):
                     run.text = part[2:-2]
                     run.font.bold = True
-                elif part.startswith('*') and part.endswith('*'):
+                elif (part.startswith('__') and part.endswith('__') and len(part) > 4):
+                    run.text = part[2:-2]
+                    run.font.bold = True
+                # Italic (* or _)
+                elif (part.startswith('*') and part.endswith('*') and len(part) > 2 and not part.startswith('**')):
                     run.text = part[1:-1]
                     run.font.italic = True
+                elif (part.startswith('_') and part.endswith('_') and len(part) > 2 and not part.startswith('__')):
+                    run.text = part[1:-1]
+                    run.font.italic = True
+                # Code (`)
+                elif (part.startswith('`') and part.endswith('`') and len(part) > 2):
+                    run.text = part[1:-1]
+                    run.font.name = 'Courier New'
+                    run.font.size = Pt(10)
+                    run.font.color.rgb = RGBColor(199, 37, 78)
+                # Link ([text](url))
+                elif re.match(r'\[.*?\]\(.*?\)', part):
+                    link_match = re.match(r'\[(.*?)\]\((.*?)\)', part)
+                    if link_match:
+                        link_text = link_match.group(1)
+                        link_url = link_match.group(2)
+                        run.text = link_text
+                        run.font.color.rgb = RGBColor(0, 0, 255)
+                        run.font.underline = True
+                        # Note: python-docx doesn't support clickable hyperlinks easily
+                        # This just styles it like a link
                 else:
                     run.text = part
                     
         # --- Helper: Process Image Placeholder ---
         def process_image_placeholder(line):
+            """Handle both [IMAGE_PLACEHOLDER_X] and ![id: img_X](img_X.png) formats"""
+            # New format: ![id: img_X](img_X.png)
+            match = re.search(r'!\[id:\s*([^\]]+)\]\([^\)]+\)', line)
+            if match:
+                img_id = match.group(1).strip()
+                if img_id in image_map:
+                    self.add_image_to_document(doc, image_map[img_id])
+                    return True
+                else:
+                    # Try old format fallback
+                    p = doc.add_paragraph()
+                    run = p.add_run(f"[{img_id}]")
+                    run.font.italic = True
+                    run.font.color.rgb = RGBColor(128, 128, 128)
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    return True
+            
+            # Old format: [IMAGE_PLACEHOLDER_X]
             match = re.search(r'\[IMAGE_PLACEHOLDER_(\d+)\]', line)
             if match:
                 img_num = match.group(1)
@@ -521,9 +610,49 @@ class WordExporter:
         lines = markdown_text.split('\n')
         table_buffer = [] # To store table rows temporarily
         in_table = False
+        in_code_block = False
+        code_block_buffer = []
         
-        for i, line in enumerate(lines):
+        i = 0
+        while i < len(lines):
+            line = lines[i]
             clean_line = line.strip()
+            
+            # Handle code blocks (```)
+            if clean_line.startswith('```'):
+                if not in_code_block:
+                    in_code_block = True
+                    code_block_buffer = []
+                    language = clean_line[3:].strip()  # Language hint
+                    i += 1
+                    continue
+                else:
+                    # End of code block
+                    in_code_block = False
+                    # Add code block to document
+                    if code_block_buffer:
+                        p = doc.add_paragraph()
+                        p.style = 'Normal'
+                        code_text = '\n'.join(code_block_buffer)
+                        run = p.add_run(code_text)
+                        run.font.name = 'Courier New'
+                        run.font.size = Pt(10)
+                        run.font.color.rgb = RGBColor(51, 51, 51)
+                        p.paragraph_format.left_indent = Pt(36)
+                        # Add light gray background (using shading if available)
+                        from docx.oxml.shared import OxmlElement
+                        from docx.oxml.ns import qn
+                        shading_elm = OxmlElement('w:shd')
+                        shading_elm.set(qn('w:fill'), 'F5F5F5')
+                        p._element.get_or_add_pPr().append(shading_elm)
+                    code_block_buffer = []
+                    i += 1
+                    continue
+            
+            if in_code_block:
+                code_block_buffer.append(line)
+                i += 1
+                continue
             
             # 1. Handle Table Logic
             if clean_line.startswith('|'):
@@ -533,13 +662,16 @@ class WordExporter:
                     if i + 1 < len(lines) and '---' in lines[i+1]:
                         in_table = True
                         table_buffer = [line] # Start buffer
+                        i += 1
                         continue # Skip processing this line as normal text
                 else:
                     # If we are already in a table, just add the line
                     # Ignore the separator line (e.g. |---|---|)
                     if '---' in line:
+                        i += 1
                         continue 
                     table_buffer.append(line)
+                    i += 1
                     continue
             
             # If we were in a table, but this line is NOT a table line (or empty)
@@ -567,10 +699,18 @@ class WordExporter:
                                     p = row_cells[c_idx].paragraphs[0]
                                     add_formatted_text(p, lines_in_cell[0])
                                     
+                                    # Format header row (first row) as bold
+                                    if r_idx == 0:
+                                        for run in p.runs:
+                                            run.font.bold = True
+                                    
                                     # Add additional lines as new paragraphs
                                     for cell_line in lines_in_cell[1:]:
                                         new_p = row_cells[c_idx].add_paragraph()
                                         add_formatted_text(new_p, cell_line)
+                                        if r_idx == 0:
+                                            for run in new_p.runs:
+                                                run.font.bold = True
                 
                 # Reset table state
                 in_table = False
@@ -578,51 +718,98 @@ class WordExporter:
                 
                 # If this current line was empty, we are done with the table. 
                 if not clean_line:
+                    i += 1
                     continue
 
             # 2. Handle Images
-            if '[IMAGE_PLACEHOLDER_' in line:
+            if '[IMAGE_PLACEHOLDER_' in line or '![id:' in line:
                 if process_image_placeholder(line):
+                    i += 1
                     continue
 
             # 3. Skip empty lines (outside of tables)
             if not clean_line:
+                i += 1
                 continue
 
             # 4. Handle Headings
             if line.startswith('#'):
-                level = len(line.split(' ')[0]) # Count hashes
-                text = line[level:].strip()
-                if 1 <= level <= 4:
+                # Count the number of # characters
+                hash_count = 0
+                for char in line:
+                    if char == '#':
+                        hash_count += 1
+                    else:
+                        break
+                
+                if hash_count <= 6 and hash_count > 0:
+                    level = hash_count
+                    text = line[level:].strip()
                     p = doc.add_paragraph()
-                    add_formatted_text(p, text) # Support bold in headers
-                    # Basic Styling based on level
-                    run = p.runs[0] # Apply size to first run or loop all
-                    p.style = f'Heading {level}'
-                continue
+                    add_formatted_text(p, text)
+                    
+                    # Apply heading styles
+                    if level <= 4:
+                        p.style = f'Heading {level}'
+                    else:
+                        # For h5 and h6, apply manual formatting
+                        for run in p.runs:
+                            run.font.bold = True
+                            run.font.size = Pt(11 if level == 5 else 10)
+                    i += 1
+                    continue
 
-            # 5. Handle Lists
-            if line.strip().startswith(('- ', '* ')):
+            # 5. Handle Lists (Unordered)
+            if line.strip().startswith(('- ', '* ', '+ ')):
                 p = doc.add_paragraph(style='List Bullet')
                 text = line.strip()[2:]
                 add_formatted_text(p, text)
                 p.paragraph_format.left_indent = Pt(20)
+                i += 1
                 continue
-                
+            
+            # 6. Handle Lists (Ordered)
             elif re.match(r'^\s*\d+\.\s', line):
                 # Numbered list
                 text = re.sub(r'^\s*\d+\.\s', '', line)
                 p = doc.add_paragraph(style='List Number')
                 add_formatted_text(p, text)
                 p.paragraph_format.left_indent = Pt(20)
+                i += 1
                 continue
 
-            # 6. Handle break tags (skip them as they're document structure markers)
+            # 7. Handle horizontal rules (---, ***, ___)
+            if re.match(r'^\s*(-{3,}|\*{3,}|_{3,})\s*$', line):
+                p = doc.add_paragraph()
+                p.paragraph_format.space_before = Pt(6)
+                p.paragraph_format.space_after = Pt(6)
+                p.add_run('_' * 50)  # Horizontal line
+                i += 1
+                continue
+
+            # 8. Handle break tags (skip them as they're document structure markers)
             if clean_line == '</break>':
-                # Page/section break handling - could add a page break here if needed
+                # Could add a page break or section break here if needed
+                # doc.add_page_break()
+                i += 1
                 continue
             
-            # 7. Handle HTML <br> tags in regular paragraphs
+            # 9. Handle blockquotes (> text)
+            if line.strip().startswith('>'):
+                text = line.strip()[1:].strip()
+                p = doc.add_paragraph()
+                add_formatted_text(p, text)
+                p.paragraph_format.left_indent = Pt(36)
+                p.paragraph_format.space_before = Pt(3)
+                p.paragraph_format.space_after = Pt(3)
+                # Add quote styling
+                for run in p.runs:
+                    run.font.italic = True
+                    run.font.color.rgb = RGBColor(96, 96, 96)
+                i += 1
+                continue
+            
+            # 10. Handle HTML <br> tags in regular paragraphs
             if '<br>' in line or '<br/>' in line or '<br />' in line:
                 line = line.replace('<br>', '\n').replace('<br/>', '\n').replace('<br />', '\n')
                 # Split by newlines and add as paragraph with internal line breaks
@@ -636,6 +823,8 @@ class WordExporter:
                 # Regular Paragraph
                 p = doc.add_paragraph()
                 add_formatted_text(p, line)
+            
+            i += 1
 
         doc.save(output_path)
         return output_path
