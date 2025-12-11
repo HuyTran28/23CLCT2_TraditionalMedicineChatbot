@@ -185,3 +185,5 @@ cython_debug/
 *.jpeg
 *.pdf
 *.docx
+
+.vscode/
