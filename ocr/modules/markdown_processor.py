@@ -81,84 +81,217 @@ class MarkdownProcessor:
     
     def fix_spelling_with_llm(self, markdown_text: str, images: list = None) -> str:
         """
-        Fix spelling errors in Vietnamese markdown text using FREE methods.
-        Preserves image placeholders, tables, and markdown structure.
+        Fix spelling errors in Vietnamese markdown text using advanced LLM methods.
+        Preserves image placeholders, tables, markdown structure, LaTeX math, and HTML tags.
         """
         # If correction disabled, return original
         if not self.use_llm_correction:
-            # logger.info("Spelling correction disabled, skipping...")
             return markdown_text
 
-        # logger.info("Fixing spelling errors using huggingface (FREE method)...")
-
         try:
-            # Only HuggingFace-based correction is supported
-            return self._fix_with_huggingface(markdown_text)
+            # Protect special elements before correction
+            protected_text, protection_map = self._protect_special_elements(markdown_text)
+            
+            # Try advanced LLM correction methods in order of preference
+            corrected_text = self._fix_with_advanced_llm(protected_text)
+            
+            # Restore protected elements
+            final_text = self._restore_protected_elements(corrected_text, protection_map)
+            
+            return final_text
 
         except Exception as e:
             logger.error(f"Spelling correction failed: {e}")
             logger.warning("Continuing with uncorrected text...")
             return markdown_text
     
-    def _fix_with_huggingface(self, markdown_text: str) -> str:
+    def _protect_special_elements(self, text: str) -> tuple:
         """
-        Fix spelling using Vietnamese spell-checkers (pyvi, underthesea).
-        Falls back to basic correction if advanced models are unavailable.
-        
-        Strategy:
-        1. Use simple Vietnamese spell-checkers for basic corrections
-        2. Preserve markdown structure, images, and special tags
-        3. Process in smaller chunks to maintain context
+        Protect special elements from being modified during spell correction.
+        Returns: (protected_text, protection_map)
         """
-        # logger.info("Using Vietnamese spell-checker for correction...")
+        protection_map = {}
+        protected_text = text
+        counter = 0
         
-        # Try using underthesea or pyvi for Vietnamese spell-checking
-        try:
-            # First, try underthesea (more reliable for Vietnamese)
-            try:
-                from underthesea import word_tokenize
-                # logger.info("Using underthesea for Vietnamese text processing...")
-                return self._fix_with_underthesea(markdown_text)
-            except ImportError:
-                logger.debug("underthesea not available, trying pyvi...")
-                pass
-            
-            # Fallback to pyvi
-            try:
-                from pyvi import ViTokenizer
-                # logger.info("Using pyvi for Vietnamese text processing...")
-                return self._fix_with_pyvi(markdown_text)
-            except ImportError:
-                logger.debug("pyvi not available, trying basic correction...")
-                pass
-            
-            # Last resort: basic pattern-based correction
-            logger.warning("No Vietnamese NLP library found. Using basic correction...")
-            # logger.info("Install for better results: pip install underthesea pyvi")
-            return self._basic_vietnamese_correction(markdown_text)
-            
-        except Exception as e:
-            logger.error(f"Spelling correction error: {e}")
-            return markdown_text
+        # 1. Protect LaTeX math expressions: $...$, $$...$$
+        # Match both inline ($x$) and display ($$x$$) math
+        math_patterns = [
+            (r'\$\$[^$]+\$\$', 'MATH_DISPLAY'),  # Display math $$...$$
+            (r'\$[^$\n]+\$', 'MATH_INLINE'),      # Inline math $...$
+        ]
+        
+        for pattern, prefix in math_patterns:
+            matches = re.finditer(pattern, protected_text)
+            for match in reversed(list(matches)):  # Reverse to maintain positions
+                placeholder = f"__{prefix}_{counter}__"
+                protection_map[placeholder] = match.group(0)
+                protected_text = protected_text[:match.start()] + placeholder + protected_text[match.end():]
+                counter += 1
+        
+        # 2. Protect HTML tags: <sub>, <sup>, <br>, and all other HTML tags
+        html_tag_pattern = r'<[^>]+>.*?</[^>]+>|<[^>]+/>|<[^>]+>'
+        matches = re.finditer(html_tag_pattern, protected_text)
+        for match in reversed(list(matches)):
+            placeholder = f"__HTML_TAG_{counter}__"
+            protection_map[placeholder] = match.group(0)
+            protected_text = protected_text[:match.start()] + placeholder + protected_text[match.end():]
+            counter += 1
+        
+        # 3. Protect image placeholders and references
+        image_patterns = [
+            r'!\[id:\s*[^\]]+\]\([^\)]+\)',  # New format: ![id: img_1](img_1.png)
+            r'\[IMAGE_PLACEHOLDER_\d+\]',      # Old format: [IMAGE_PLACEHOLDER_1]
+        ]
+        
+        for pattern in image_patterns:
+            matches = re.finditer(pattern, protected_text)
+            for match in reversed(list(matches)):
+                placeholder = f"__IMAGE_{counter}__"
+                protection_map[placeholder] = match.group(0)
+                protected_text = protected_text[:match.start()] + placeholder + protected_text[match.end():]
+                counter += 1
+        
+        # 4. Protect markdown headers
+        header_pattern = r'^#{1,6}\s+.+$'
+        lines = protected_text.split('\n')
+        for i, line in enumerate(lines):
+            if re.match(header_pattern, line.strip()):
+                placeholder = f"__HEADER_{counter}__"
+                protection_map[placeholder] = line
+                lines[i] = placeholder
+                counter += 1
+        protected_text = '\n'.join(lines)
+        
+        # 5. Protect table rows
+        table_pattern = r'^\|.+\|$'
+        lines = protected_text.split('\n')
+        for i, line in enumerate(lines):
+            if re.match(table_pattern, line.strip()):
+                placeholder = f"__TABLE_ROW_{counter}__"
+                protection_map[placeholder] = line
+                lines[i] = placeholder
+                counter += 1
+        protected_text = '\n'.join(lines)
+        
+        # 6. Protect code blocks
+        code_block_pattern = r'```[^`]*```'
+        matches = re.finditer(code_block_pattern, protected_text, re.DOTALL)
+        for match in reversed(list(matches)):
+            placeholder = f"__CODE_BLOCK_{counter}__"
+            protection_map[placeholder] = match.group(0)
+            protected_text = protected_text[:match.start()] + placeholder + protected_text[match.end():]
+            counter += 1
+        
+        # 7. Protect inline code
+        inline_code_pattern = r'`[^`]+`'
+        matches = re.finditer(inline_code_pattern, protected_text)
+        for match in reversed(list(matches)):
+            placeholder = f"__INLINE_CODE_{counter}__"
+            protection_map[placeholder] = match.group(0)
+            protected_text = protected_text[:match.start()] + placeholder + protected_text[match.end():]
+            counter += 1
+        
+        return protected_text, protection_map
     
-    def _fix_with_underthesea(self, markdown_text: str) -> str:
-        """Use underthesea for Vietnamese spell-checking"""
+    def _restore_protected_elements(self, text: str, protection_map: dict) -> str:
+        """
+        Restore protected elements after spell correction.
+        """
+        result = text
+        # Restore in reverse order to handle nested protections
+        for placeholder, original in protection_map.items():
+            result = result.replace(placeholder, original)
+        return result
+    
+    def _fix_with_advanced_llm(self, text: str) -> str:
+        """
+        Use advanced LLM-based correction with transformer models.
+        Falls back to simpler methods if transformers are unavailable.
+        """
+        try:
+            # Try using transformers library for advanced correction
+            from transformers import pipeline
+            logger.info("Attempting advanced LLM correction with transformers...")
+            
+            # Try to use a Vietnamese spell correction model
+            try:
+                corrector = pipeline("text2text-generation", model="VietAI/vit5-base")
+                return self._correct_with_transformer(text, corrector)
+            except Exception as e:
+                logger.debug(f"Transformer model not available: {e}")
+                pass
+        except ImportError:
+            logger.debug("Transformers library not available")
+        
+        # Fallback to Vietnamese NLP libraries
+        try:
+            from underthesea import word_tokenize
+            logger.info("Using underthesea for Vietnamese text processing...")
+            return self._fix_with_underthesea(text)
+        except ImportError:
+            logger.debug("underthesea not available")
+        
+        try:
+            from pyvi import ViTokenizer
+            logger.info("Using pyvi for Vietnamese text processing...")
+            return self._fix_with_pyvi(text)
+        except ImportError:
+            logger.debug("pyvi not available")
+        
+        # Final fallback: enhanced pattern-based correction
+        logger.info("Using enhanced pattern-based correction...")
+        return self._enhanced_pattern_correction(text)
+    
+    def _correct_with_transformer(self, text: str, corrector) -> str:
+        """
+        Use transformer model for spell correction.
+        Process text in chunks to avoid token limits.
+        """
+        # Split into sentences
+        sentences = re.split(r'([.!?]\s+)', text)
+        corrected_sentences = []
+        
+        for i in range(0, len(sentences), 2):
+            sentence = sentences[i]
+            separator = sentences[i+1] if i+1 < len(sentences) else ''
+            
+            if sentence.strip():
+                try:
+                    # Generate correction
+                    result = corrector(f"sửa lỗi: {sentence}", max_length=512, num_return_sequences=1)
+                    corrected = result[0]['generated_text'] if result else sentence
+                    corrected_sentences.append(corrected + separator)
+                except Exception as e:
+                    logger.debug(f"Error correcting sentence: {e}")
+                    corrected_sentences.append(sentence + separator)
+            else:
+                corrected_sentences.append(sentence + separator)
+        
+        return ''.join(corrected_sentences)
+    
+    def _enhanced_pattern_correction(self, text: str) -> str:
+        """
+        Enhanced pattern-based correction with context awareness.
+        """
+        lines = text.split('\n')
+        corrected_lines = []
+        
+        for line in lines:
+            if line.strip():
+                corrected_line = self._apply_enhanced_corrections(line)
+                corrected_lines.append(corrected_line)
+            else:
+                corrected_lines.append(line)
+        
+        return '\n'.join(corrected_lines)
+    
+    def _fix_with_underthesea(self, text: str) -> str:
+        """Use underthesea for Vietnamese spell-checking with improved handling"""
         from underthesea import word_tokenize
         
-        # Preserve special elements and HTML tags
-        preserved = self._extract_special_elements(markdown_text)
-        
-        # Replace HTML tags with placeholders to protect them
-        text_with_placeholders = markdown_text
-        html_tags = re.findall(r'<[^>]+>', text_with_placeholders)
-        tag_map = {}
-        for i, tag in enumerate(html_tags):
-            placeholder = f"__HTML_TAG_{i}__"
-            tag_map[placeholder] = tag
-            text_with_placeholders = text_with_placeholders.replace(tag, placeholder, 1)
-        
         # Process in smaller chunks (1000 chars) to maintain context
-        chunks = self._split_into_chunks(text_with_placeholders, 1000)
+        chunks = self._split_into_chunks(text, 1000)
         corrected_chunks = []
         
         for i, chunk in enumerate(chunks, 1):
@@ -169,14 +302,13 @@ class MarkdownProcessor:
             corrected_lines = []
             
             for line in lines:
-                # Skip markdown headers, images, breaks, and tables
-                if self._should_skip_line(line):
+                if not line.strip():
                     corrected_lines.append(line)
                     continue
                 
-                # Apply basic corrections without tokenization that breaks text
+                # Apply enhanced corrections
                 try:
-                    corrected_line = self._apply_basic_corrections(line)
+                    corrected_line = self._apply_enhanced_corrections(line)
                     corrected_lines.append(corrected_line)
                 except Exception as e:
                     logger.debug(f"Error processing line: {e}")
@@ -184,35 +316,14 @@ class MarkdownProcessor:
             
             corrected_chunks.append('\n'.join(corrected_lines))
         
-        result = '\n'.join(corrected_chunks)
-        
-        # Restore HTML tags
-        for placeholder, tag in tag_map.items():
-            result = result.replace(placeholder, tag)
-        
-        # Restore preserved elements
-        result = self._restore_special_elements(result, preserved)
-        
-        return result
+        return '\n'.join(corrected_chunks)
     
-    def _fix_with_pyvi(self, markdown_text: str) -> str:
-        """Use pyvi for Vietnamese spell-checking"""
+    def _fix_with_pyvi(self, text: str) -> str:
+        """Use pyvi for Vietnamese spell-checking with improved handling"""
         from pyvi import ViTokenizer
         
-        # Preserve special elements and HTML tags
-        preserved = self._extract_special_elements(markdown_text)
-        
-        # Replace HTML tags with placeholders to protect them
-        text_with_placeholders = markdown_text
-        html_tags = re.findall(r'<[^>]+>', text_with_placeholders)
-        tag_map = {}
-        for i, tag in enumerate(html_tags):
-            placeholder = f"__HTML_TAG_{i}__"
-            tag_map[placeholder] = tag
-            text_with_placeholders = text_with_placeholders.replace(tag, placeholder, 1)
-        
         # Process in smaller chunks (1000 chars)
-        chunks = self._split_into_chunks(text_with_placeholders, 1000)
+        chunks = self._split_into_chunks(text, 1000)
         corrected_chunks = []
         
         for i, chunk in enumerate(chunks, 1):
@@ -222,13 +333,13 @@ class MarkdownProcessor:
             corrected_lines = []
             
             for line in lines:
-                if self._should_skip_line(line):
+                if not line.strip():
                     corrected_lines.append(line)
                     continue
                 
                 try:
-                    # Apply basic corrections instead of tokenization
-                    corrected_line = self._apply_basic_corrections(line)
+                    # Apply enhanced corrections
+                    corrected_line = self._apply_enhanced_corrections(line)
                     corrected_lines.append(corrected_line)
                 except Exception as e:
                     logger.debug(f"Error processing line: {e}")
@@ -236,19 +347,37 @@ class MarkdownProcessor:
             
             corrected_chunks.append('\n'.join(corrected_lines))
         
-        result = '\n'.join(corrected_chunks)
+        return '\n'.join(corrected_chunks)
+    
+    def _apply_enhanced_corrections(self, line: str) -> str:
+        """
+        Enhanced OCR corrections with context-aware pattern matching.
+        """
+        # First apply basic corrections
+        line = self._apply_basic_corrections(line)
         
-        # Restore HTML tags
-        for placeholder, tag in tag_map.items():
-            result = result.replace(placeholder, tag)
+        # Additional context-aware corrections
+        # Fix common Vietnamese phrases
+        context_corrections = {
+            r'\bc h ứ a\b': 'chữa',
+            r'\bt h u ố c\b': 'thuốc',
+            r'\bb ệ n h\b': 'bệnh',
+            r'\bt á c\s+d ụ n g\b': 'tác dụng',
+            r'\bc h ấ t\b': 'chất',
+            r'\bc h ứ n g\b': 'chứng',
+            r'\bt h ể\b': 'thể',
+            r'\bc ơ\s+t h ể\b': 'cơ thể',
+        }
         
-        result = self._restore_special_elements(result, preserved)
+        for pattern, replacement in context_corrections.items():
+            line = re.sub(pattern, replacement, line)
         
-        return result
+        return line
     
     def _apply_basic_corrections(self, line: str) -> str:
         """Apply targeted OCR corrections to a single line without breaking formatting"""
         corrections = {
+            # Common Vietnamese word splits (OCR breaking words incorrectly)
             r'\bl\s+à\b': 'là',  # "l à" -> "là"
             r'\bc\s+ó\b': 'có',  # "c ó" -> "có"
             r'\bt\s+ừ\b': 'từ',  # "t ừ" -> "từ"
@@ -259,13 +388,61 @@ class MarkdownProcessor:
             r'\bs\s+ô\b': 'số',  # "s ô" -> "số"
             r'\bm\s+ủ\b': 'mủ',  # "m ủ" -> "mủ"
             r'\bv\s+ự\b': 'vự',  # "v ự" -> "vự"
-            r'\bΝιάς\b': 'Nước',
-            # Common OCR character confusions
+            r'\bt\s+ại\b': 'tại',  # "t ại" -> "tại"
+            r'\bn\s+ên\b': 'nên',  # "n ên" -> "nên"
+            r'\bth\s+ì\b': 'thì',  # "th ì" -> "thì"
+            r'\btr\s+ong\b': 'trong',  # "tr ong" -> "trong"
+            r'\bch\s+o\b': 'cho',  # "ch o" -> "cho"
+            r'\bc\s+ủa\b': 'của',  # "c ủa" -> "của"
+            r'\bh\s+ay\b': 'hay',  # "h ay" -> "hay"
+            r'\bv\s+à\b': 'và',  # "v à" -> "và"
+            r'\bn\s+ày\b': 'này',  # "n ày" -> "này"
+            r'\bđ\s+ó\b': 'đó',  # "đ ó" -> "đó"
+            r'\bk\s+ể\b': 'kể',  # "k ể" -> "kể"
+            r'\bt\s+ên\b': 'tên',  # "t ên" -> "tên"
+            r'\bch\s+ưa\b': 'chưa',  # "ch ưa" -> "chưa"
+            r'\bđ\s+ã\b': 'đã',  # "đ ã" -> "đã"
+            r'\bm\s+ột\b': 'một',  # "m ột" -> "một"
+            r'\bh\s+ơn\b': 'hơn',  # "h ơn" -> "hơn"
+            r'\bcũ\s+ng\b': 'cũng',  # "cũ ng" -> "cũng"
+            r'\bnh\s+ững\b': 'những',  # "nh ững" -> "những"
+            
+            # Common Vietnamese misspellings
             r'\bđươc\b': 'được',
             r'\bduợc\b': 'được',
+            r'\bđuợc\b': 'được',
             r'\bnhư\s+ng\b': 'nhưng',
+            r'\btr\s+ên\b': 'trên',
+            r'\bdu\s+ới\b': 'dưới',
+            r'\bsa\s+u\b': 'sau',
+            r'\btr\s+ước\b': 'trước',
+            r'\bgi\s+ữa\b': 'giữa',
+            r'\bhi\s+ện\b': 'hiện',
+            r'\bth\s+ực\b': 'thực',
+            r'\bch\s+ính\b': 'chính',
+            
+            # Character confusions
+            r'\bΝιάς\b': 'Nước',
             r'\b0\s+\b': 'ở',  # "0" often confused for "ở"
+            r'\b1\s+à\b': 'là',  # "1" confused for "l"
+            r'\bII\b': 'II',  # Roman numerals
+            
+            # Number formatting
             r'\.\s+\b1\s+9': '.1.9',  # ". 1,9" -> ".1,9"
+            r'(\d+)\s+\.\s+(\d+)': r'\1.\2',  # "5 . 2" -> "5.2"
+            r'(\d+)\s+,\s+(\d+)': r'\1,\2',  # "5 , 2" -> "5,2"
+            
+            # Common punctuation issues
+            r'\s+,': ',',  # Space before comma
+            r'\s+\.': '.',  # Space before period
+            r'\(\s+': '(',  # Space after opening paren
+            r'\s+\)': ')',  # Space before closing paren
+            
+            # Vietnamese tone mark errors
+            r'\bhoạ\s+t\b': 'hoạt',
+            r'\bkhô\s+ng\b': 'không',
+            r'\bthế\s+o\b': 'theo',
+            r'\bcá\s+c\b': 'các',
         }
         
         result = line
@@ -274,107 +451,20 @@ class MarkdownProcessor:
         
         return result
     
-    def _basic_vietnamese_correction(self, markdown_text: str) -> str:
+    def _basic_vietnamese_correction(self, text: str) -> str:
         """Basic pattern-based Vietnamese text correction"""
-        
-        # Preserve special elements
-        preserved = self._extract_special_elements(markdown_text)
-        
-        # Replace HTML tags with placeholders to protect them
-        text_with_placeholders = markdown_text
-        html_tags = re.findall(r'<[^>]+>', text_with_placeholders)
-        tag_map = {}
-        for i, tag in enumerate(html_tags):
-            placeholder = f"__HTML_TAG_{i}__"
-            tag_map[placeholder] = tag
-            text_with_placeholders = text_with_placeholders.replace(tag, placeholder, 1)
-        
-        result = text_with_placeholders
+        result = text
         lines = result.split('\n')
         corrected_lines = []
         
         for line in lines:
-            if self._should_skip_line(line):
-                corrected_lines.append(line)
-            else:
-                corrected_line = self._apply_basic_corrections(line)
+            if line.strip():
+                corrected_line = self._apply_enhanced_corrections(line)
                 corrected_lines.append(corrected_line)
+            else:
+                corrected_lines.append(line)
         
-        result = '\n'.join(corrected_lines)
-        
-        # Restore HTML tags
-        for placeholder, tag in tag_map.items():
-            result = result.replace(placeholder, tag)
-        
-        result = self._restore_special_elements(result, preserved)
-        
-        return result
-    
-    def _extract_special_elements(self, text: str) -> dict:
-        """Extract and protect special markdown elements"""
-        preserved = {
-            'images': [],
-            'breaks': [],
-            'headers': [],
-            'tables': []
-        }
-        
-        # Find all image placeholders
-        preserved['images'] = re.findall(r'\[IMAGE_PLACEHOLDER_\d+\]', text)
-        
-        # Find all break tags
-        preserved['breaks'] = re.findall(r'</break>', text)
-        
-        # Find all markdown headers
-        preserved['headers'] = re.findall(r'^#{1,6}\s+.+$', text, re.MULTILINE)
-        
-        # Find table rows
-        preserved['tables'] = re.findall(r'^\|.+\|$', text, re.MULTILINE)
-        
-        return preserved
-    
-    def _restore_special_elements(self, text: str, preserved: dict) -> str:
-        """Ensure special elements are preserved in the output"""
-        # This is a validation step - log warnings if elements are missing
-        
-        for img in preserved['images']:
-            if img not in text:
-                logger.warning(f"Image placeholder missing after correction: {img}")
-        
-        for brk in preserved['breaks']:
-            if text.count(brk) < preserved['breaks'].count(brk):
-                logger.warning(f"Break tag count mismatch after correction")
-        
-        return text
-    
-    def _should_skip_line(self, line: str) -> bool:
-        """Check if a line should be skipped during correction"""
-        line_stripped = line.strip()
-        
-        # Skip empty lines
-        if not line_stripped:
-            return True
-        
-        # Skip markdown headers
-        if line_stripped.startswith('#'):
-            return True
-        
-        # Skip image placeholders
-        if '[IMAGE_PLACEHOLDER_' in line:
-            return True
-        
-        # Only skip if line is ONLY the break tag
-        if line_stripped == '</break>':
-            return True
-        
-        # Don't skip table rows - apply spelling correction to table content too
-        # Table rows should be processed for spelling errors
-        
-        # Skip horizontal rules
-        if re.match(r'^[-*_]{3,}$', line_stripped):
-            return True
-        
-        return False
+        return '\n'.join(corrected_lines)
     
     def _split_into_chunks(self, text: str, chunk_size: int) -> list:
         """
