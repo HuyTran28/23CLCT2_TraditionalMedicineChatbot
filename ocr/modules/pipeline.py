@@ -125,16 +125,13 @@ class OCRPipeline:
             if mode is None and self.auto_detect:
                 is_digital = self.digital_parser.is_digital_pdf(pdf_path)
                 mode = "digital" if is_digital else "scan"
-                # logger.info(f"Auto-detected mode: {mode}")
             elif mode is None:
-                mode = "scan"  # Default to scan if auto-detect disabled
+                mode = "scan"
             
             # Process based on mode
             if mode == "digital":
-                # logger.info(f"Processing as digital PDF: {pdf_path.name}")
                 result = self._process_digital(pdf_path, output_path)
             elif mode == "scan":
-                # logger.info(f"Processing as scanned PDF: {pdf_path.name}")
                 result = self._process_scanned(pdf_path, output_path)
             else:
                 raise ValueError(f"Unknown mode: {mode}")
@@ -154,7 +151,6 @@ class OCRPipeline:
         """Process digital PDF using pdf2docx"""
         try:
             self.digital_parser.convert(pdf_path, output_path)
-            # logger.info(f"Digital conversion complete: {output_path}")
             return output_path
         except Exception as e:
             logger.error(f"Digital conversion failed: {e}")
@@ -165,11 +161,9 @@ class OCRPipeline:
         
         try:
             # Step 1: Use marker-pdf to process the entire PDF
-            # logger.info("Step 1: Processing PDF with marker-pdf...")
             marker_result = self.ocr_engine.process_pdf(pdf_path)
             
             # Step 2: Extract and organize images
-            # logger.info(f"Extracted {len(marker_result['images'])} images/formulas")
             organized_images = self._organize_extracted_images(
                 marker_result['images'],
                 pdf_path
@@ -177,7 +171,6 @@ class OCRPipeline:
             self.metrics.add_images_extracted([img['output_path'] for img in organized_images])
             
             # Step 3: Post-process markdown with image IDs
-            # logger.info("Step 3: Post-processing markdown with image mapping...")
             processed_markdown = self.markdown_processor.process(
                 marker_result['markdown'],
                 images=organized_images
@@ -193,17 +186,14 @@ class OCRPipeline:
             markdown_path = self.output_dir / f"{pdf_path.stem}_ocr_results.md"
             with open(markdown_path, "w", encoding="utf-8") as f:
                 f.write(processed_markdown)
-            # logger.info(f"Saved processed markdown: {markdown_path}")
             self.metrics.set_output_files_size(markdown_path=markdown_path)
             
             # Step 6: Export to DOCX
-            # logger.info("Step 6: Converting markdown to Word document...")
             self.exporter.markdown_to_word(
                 processed_markdown,
                 str(output_path),
                 images=organized_images
             )
-            # logger.info(f"OCR processing complete: {output_path}")
             
             return output_path
             
@@ -276,8 +266,6 @@ class OCRPipeline:
         with open(index_path, 'w', encoding='utf-8') as f:
             json.dump(index_data, f, indent=2, ensure_ascii=False)
         
-        # logger.info(f"Created image index: {index_path}")
-        
         return organized_images
     
     def _count_samples(self, markdown_text: str, images: List[Dict[str, Any]]) -> int:
@@ -295,7 +283,7 @@ class OCRPipeline:
         import re
         headings = len(re.findall(r'^#+\s', markdown_text, re.MULTILINE))
         
-        # Count paragraphs (non-empty lines between blank lines)
+        # Count paragraphs
         lines = [l.strip() for l in markdown_text.split('\n') if l.strip()]
         
         # Count tables
@@ -332,14 +320,9 @@ class OCRPipeline:
             logger.warning(f"No PDF files found in {input_dir}")
             return []
         
-        # logger.info(f"Found {len(pdf_files)} PDF files to process")
         results = []
         
-        for idx, pdf_path in enumerate(pdf_files, start=1):
-            # logger.info(f"\n{'='*60}")
-            # logger.info(f"Processing file {idx}/{len(pdf_files)}: {pdf_path.name}")
-            # logger.info(f"{'='*60}")
-            
+        for _, pdf_path in enumerate(pdf_files, start=1):     
             try:
                 output_path = self.process_pdf(pdf_path, mode=mode)
                 results.append({
@@ -358,8 +341,4 @@ class OCRPipeline:
         
         # Summary
         success_count = sum(1 for r in results if r["status"] == "success")
-        # logger.info(f"\n{'='*60}")
-        # logger.info(f"Batch processing complete: {success_count}/{len(results)} successful")
-        # logger.info(f"{'='*60}")
-        
         return results

@@ -32,52 +32,76 @@ class MarkdownProcessor:
         
     def insert_section_breaks(self, markdown_text: str) -> str:
         """
-        Insert </break> tags after level-2 headings (e.g., 2.1, 2.2, 3.1, etc.)
+        Insert </break> tags between level-2 headings (e.g., 2.1 -> 2.2, a) -> b), etc.)
+        Handles any numbering/lettering scheme for level-2 headings.
         
         Args:
             markdown_text: Input markdown text
             
         Returns:
-            Markdown text with section breaks inserted
+            Markdown text with section breaks inserted between level-2 headings
         """
         lines = markdown_text.split('\n')
         processed_lines = []
+        last_heading_level = 0
         
         for i, line in enumerate(lines):
-            # Check if this line is a level-2 heading
-            if self._is_level2_heading(line):
-                # Append the break tag to the same line
-                processed_lines.append(line + '\n</break>')
-                logger.debug(f"Inserted section break after: {line.strip()[:50]}...")
-            else:
-                processed_lines.append(line)
+            current_heading_level = self._get_heading_level(line)
+            
+            # Check if we're transitioning to a level-2 heading from a different level-2
+            if current_heading_level == 2 and last_heading_level == 2:
+                # Insert break before the new level-2 heading
+                processed_lines.append('</break>')
+                logger.debug(f"Inserted section break before: {line.strip()[:50]}...")
+            
+            processed_lines.append(line)
+            
+            # Update last heading level if this line is a heading
+            if current_heading_level > 0:
+                last_heading_level = current_heading_level
         
         return '\n'.join(processed_lines)
     
-    def _is_level2_heading(self, line: str) -> bool:
+    def _get_heading_level(self, line: str) -> int:
         """
-        Check if a line is a level-2 heading (e.g., 2.1, 2.2, 3.1)
+        Detect markdown heading level from a line.
+        Returns the heading level (1-6) based on # count, or 0 if not a heading.
+        
+        Handles:
+        - Markdown headings: # (level 1), ## (level 2), ### (level 3), etc.
+        - Also detects numbered/lettered headings as level 2 if they match X.Y format
         
         Args:
             line: Line to check
             
         Returns:
-            True if line is a level-2 heading
+            Heading level (1-6) or 0 if not a heading
         """
         line = line.strip()
         
-        # Pattern: "## 2.1 Title" or "2.1 Title" or "2.1. Title"
-        # Level-2 means X.Y format (e.g., 2.1, 3.2, not 2.1.1)
-        match = re.match(r'^(#{1,6}\s*)?(\d+)\.(\d+)\.?\s+(.+)$', line)
+        # Check for markdown heading syntax (# ## ### etc.)
+        hash_match = re.match(r'^(#{1,6})\s+', line)
+        if hash_match:
+            hash_count = len(hash_match.group(1))
+            return hash_count
         
-        if match:
-            # Check that it's exactly X.Y format (not X.Y.Z)
-            heading_text = match.group(4)
-            # Make sure there's no additional numbering in the heading
-            if not re.match(r'^\d+\.', heading_text):
-                return True
+        # Check for numbered level-2 headings (X.Y format: 2.1, 3.2, etc.)
+        # These are considered level-2 since they're sub-sections
+        numbered_match = re.match(r'^(\d+)\.(\d+)\s+', line)
+        if numbered_match:
+            return 2
         
-        return False
+        # Check for lettered level-2 headings (a) b) c) etc.)
+        lettered_match = re.match(r'^[a-z]\)\s+', line, re.IGNORECASE)
+        if lettered_match:
+            return 2
+        
+        # Check for roman numeral level-2 headings (i) ii) iii) etc.)
+        roman_match = re.match(r'^[ivx]+\)\s+', line, re.IGNORECASE)
+        if roman_match:
+            return 2
+        
+        return 0
     
     def fix_spelling_with_llm(self, markdown_text: str, images: list = None) -> str:
         """
@@ -174,24 +198,6 @@ class MarkdownProcessor:
                 counter += 1
         protected_text = '\n'.join(lines)
         
-        # 6. Protect code blocks
-        code_block_pattern = r'```[^`]*```'
-        matches = re.finditer(code_block_pattern, protected_text, re.DOTALL)
-        for match in reversed(list(matches)):
-            placeholder = f"__CODE_BLOCK_{counter}__"
-            protection_map[placeholder] = match.group(0)
-            protected_text = protected_text[:match.start()] + placeholder + protected_text[match.end():]
-            counter += 1
-        
-        # 7. Protect inline code
-        inline_code_pattern = r'`[^`]+`'
-        matches = re.finditer(inline_code_pattern, protected_text)
-        for match in reversed(list(matches)):
-            placeholder = f"__INLINE_CODE_{counter}__"
-            protection_map[placeholder] = match.group(0)
-            protected_text = protected_text[:match.start()] + placeholder + protected_text[match.end():]
-            counter += 1
-        
         return protected_text, protection_map
     
     def _restore_protected_elements(self, text: str, protection_map: dict) -> str:
@@ -210,14 +216,14 @@ class MarkdownProcessor:
         """
         # Vietnamese NLP libraries first
         try:
-            from underthesea import word_tokenize  # noqa: F401
+            from underthesea import word_tokenize  
             logger.info("Using underthesea for Vietnamese text processing...")
             return self._fix_with_underthesea(text)
         except ImportError:
             logger.debug("underthesea not available")
         
         try:
-            from pyvi import ViTokenizer  # noqa: F401
+            from pyvi import ViTokenizer
             logger.info("Using pyvi for Vietnamese text processing...")
             return self._fix_with_pyvi(text)
         except ImportError:
@@ -465,9 +471,10 @@ class MarkdownProcessor:
     def process(self, markdown_text: str, images: list = None) -> str:
         """
         Full post-processing pipeline:
-        1. Insert image IDs for mapping
-        2. Insert section breaks
-        3. Fix spelling with LLM
+        1. Fix markdown syntax errors
+        2. Insert image IDs for mapping
+        3. Insert section breaks
+        4. Fix spelling with LLM
         
         Args:
             markdown_text: Input markdown text
@@ -476,24 +483,151 @@ class MarkdownProcessor:
         Returns:
             Processed markdown text with image IDs
         """
-        # logger.info("Starting markdown post-processing...")
+        # Step 0: Fix markdown syntax errors
+        markdown_text = self._fix_markdown_syntax(markdown_text)
         
-        # Step 0: Inject image IDs into markdown
+        # Step 1: Inject image IDs into markdown
         if images:
-            # logger.info("Step 0: Injecting image IDs into markdown...")
             markdown_text = self._inject_image_ids(markdown_text, images)
         
-        # Step 1: Insert section breaks
-        # logger.info("Step 1: Inserting section breaks for level-2 headings...")
+        # Step 2: Insert section breaks
         markdown_text = self.insert_section_breaks(markdown_text)
         
-        # Step 2: Fix spelling with LLM
+        # Step 3: Fix spelling with LLM
         if self.use_llm_correction:
-            # logger.info("Step 2: Fixing spelling errors with LLM...")
             markdown_text = self.fix_spelling_with_llm(markdown_text, images)
         
-        # logger.info("Markdown post-processing complete")
         return markdown_text
+    
+    
+    def _fix_markdown_syntax(self, text: str) -> str:
+        """
+        Fix common markdown syntax errors from OCR output.
+        
+        Handles:
+        - Missing spaces after markdown markers (#, >, -, *)
+        - Broken bold/italic markers (**text, *text without closing)
+        - Malformed links and images
+        - Broken list formatting
+        - Broken table structures
+        
+        Args:
+            text: Input markdown text
+            
+        Returns:
+            Fixed markdown text
+        """
+        lines = text.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            fixed_line = self._fix_line_markdown_syntax(line)
+            fixed_lines.append(fixed_line)
+        
+        result = '\n'.join(fixed_lines)
+        
+        # Fix multi-line issues
+        result = self._fix_formatting_markers(result)
+        result = self._fix_broken_links(result)
+        result = self._fix_broken_tables(result)
+        
+        return result
+    
+    def _fix_line_markdown_syntax(self, line: str) -> str:
+        """Fix markdown syntax issues on a single line"""
+        # Fix heading syntax: #Heading -> # Heading
+        line = re.sub(r'^(#{1,6})([^\s#])', r'\1 \2', line)
+        
+        # Fix blockquote syntax: >text -> > text
+        line = re.sub(r'^(>+)([^\s>])', r'\1 \2', line)
+        
+        # Fix list syntax: -text -> - text
+        line = re.sub(r'^(\s*)([-*+])([^\s])', r'\1\2 \3', line)
+        
+        # Fix numbered list: 1.text -> 1. text
+        line = re.sub(r'^(\s*)(\d+)\.([^\s.])', r'\1\2. \3', line)
+        
+        return line
+    
+    def _fix_formatting_markers(self, text: str) -> str:
+        """
+        Fix broken bold, italic, and code formatting markers.
+        """
+        # Find lines with unpaired ** or * markers
+        lines = text.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            # Count unescaped markers
+            bold_count = len(re.findall(r'(?<!\\\)\*\*', line))
+            italic_count = len(re.findall(r'(?<!\\\)[*_]', line)) - (bold_count * 2)
+            
+            # If we have odd number of bold markers, it's likely malformed
+            if bold_count % 2 == 1:
+                # Try to fix by adding closing marker at line end if text looks like should be bold
+                if '**' in line and not line.rstrip().endswith('**'):
+                    line = line.rstrip() + '**'
+            
+            # Same for italic
+            if italic_count % 2 == 1:
+                # Check if line has unclosed italic
+                if re.search(r'[*_][^*_\s]', line) and not line.rstrip().endswith(('*', '_')):
+                    # Detect which marker was used
+                    if '*' in line:
+                        line = line.rstrip() + '*'
+            
+            fixed_lines.append(line)
+        
+        return '\n'.join(fixed_lines)
+    
+    def _fix_broken_links(self, text: str) -> str:
+        """
+        Fix broken markdown links and image references.
+        """
+        # Fix incomplete link syntax
+        text = re.sub(r'\[([^\]]+)$', r'[\1]', text, flags=re.MULTILINE)
+        
+        # Fix broken image syntax
+        text = re.sub(r'!\[([^\]]+)$', r'![\1]', text, flags=re.MULTILINE)
+        
+        # Fix broken URL in parentheses
+        text = re.sub(r'\(([^\)]+)$', r'(\1)', text, flags=re.MULTILINE)
+        
+        return text
+    
+    def _fix_broken_tables(self, text: str) -> str:
+        """
+        Fix broken table structures.
+        """
+        lines = text.split('\n')
+        fixed_lines = []
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i]
+            
+            # Check if this looks like a table row
+            if '|' in line:
+                # Ensure line starts and ends with |
+                if not line.strip().startswith('|'):
+                    line = '|' + line
+                if not line.strip().endswith('|'):
+                    line = line + '|'
+                
+                # Check if next line is a separator
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if re.match(r'^\|[\s\-|:]+\|?$', next_line):
+                        # This is a table header, ensure separator is properly formatted
+                        if not next_line.startswith('|'):
+                            lines[i + 1] = '|' + next_line
+                        if not next_line.endswith('|'):
+                            lines[i + 1] = next_line + '|'
+            
+            fixed_lines.append(line)
+            i += 1
+        
+        return '\n'.join(fixed_lines)
     
     def _inject_image_ids(self, markdown_text: str, images: list = None) -> str:
         """
@@ -530,7 +664,6 @@ class MarkdownProcessor:
                     image_id = img.get('image_id', f'img_{idx}')
                     
                     # Create a markdown reference with image ID
-                    # Format: ![id: <image_id>](<image_id>.png)
                     image_reference = f"![id: {image_id}]({image_id}.png)"
                     result = result.replace(placeholder, image_reference, 1)
                     

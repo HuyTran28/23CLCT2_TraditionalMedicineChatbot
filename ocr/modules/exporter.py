@@ -617,43 +617,7 @@ class WordExporter:
         while i < len(lines):
             line = lines[i]
             clean_line = line.strip()
-            
-            # Handle code blocks (```)
-            if clean_line.startswith('```'):
-                if not in_code_block:
-                    in_code_block = True
-                    code_block_buffer = []
-                    language = clean_line[3:].strip()  # Language hint
-                    i += 1
-                    continue
-                else:
-                    # End of code block
-                    in_code_block = False
-                    # Add code block to document
-                    if code_block_buffer:
-                        p = doc.add_paragraph()
-                        p.style = 'Normal'
-                        code_text = '\n'.join(code_block_buffer)
-                        run = p.add_run(code_text)
-                        run.font.name = 'Courier New'
-                        run.font.size = Pt(10)
-                        run.font.color.rgb = RGBColor(51, 51, 51)
-                        p.paragraph_format.left_indent = Pt(36)
-                        # Add light gray background (using shading if available)
-                        from docx.oxml.shared import OxmlElement
-                        from docx.oxml.ns import qn
-                        shading_elm = OxmlElement('w:shd')
-                        shading_elm.set(qn('w:fill'), 'F5F5F5')
-                        p._element.get_or_add_pPr().append(shading_elm)
-                    code_block_buffer = []
-                    i += 1
-                    continue
-            
-            if in_code_block:
-                code_block_buffer.append(line)
-                i += 1
-                continue
-            
+                        
             # 1. Handle Table Logic
             if clean_line.startswith('|'):
                 # It's a table row

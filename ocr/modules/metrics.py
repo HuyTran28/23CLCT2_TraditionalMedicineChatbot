@@ -250,7 +250,6 @@ class PipelineMetrics:
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(metrics_serializable, f, indent=2, ensure_ascii=False)
         
-        # logger.info(f"Metrics saved to: {output_path}")
         return output_path
     
     def load_metrics_json(self, input_path: str | Path) -> Dict[str, Any]:
@@ -258,5 +257,4 @@ class PipelineMetrics:
         input_path = Path(input_path)
         with open(input_path, 'r', encoding='utf-8') as f:
             self.metrics = json.load(f)
-        # logger.info(f"Metrics loaded from: {input_path}")
         return self.metrics

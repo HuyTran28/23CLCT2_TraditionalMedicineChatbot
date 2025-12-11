@@ -82,7 +82,7 @@ class PDFConverter:
                 logger.info(f"  Page {page_num + 1}/{total_pages} → {image_filename}")
             
             doc.close()
-            logger.info(f"✓ Converted {len(image_paths)} pages to images")
+            logger.info(f"Converted {len(image_paths)} pages to images")
             
         except Exception as e:
             raise RuntimeError(f"Failed to convert PDF to images: {e}")
