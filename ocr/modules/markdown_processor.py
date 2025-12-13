@@ -32,33 +32,46 @@ class MarkdownProcessor:
         
     def insert_section_breaks(self, markdown_text: str) -> str:
         """
-        Insert </break> tags between level-2 headings (e.g., 2.1 -> 2.2, a) -> b), etc.)
+        Insert </break> tags at the end of level-2 heading sections (e.g., after content of 2.1, 2.2, etc.)
         Handles any numbering/lettering scheme for level-2 headings.
         
         Args:
             markdown_text: Input markdown text
             
         Returns:
-            Markdown text with section breaks inserted between level-2 headings
+            Markdown text with section breaks inserted at the end of level-2 sections
         """
         lines = markdown_text.split('\n')
         processed_lines = []
         last_heading_level = 0
+        last_level2_index = -1  # Track where the last level-2 heading content ends
         
         for i, line in enumerate(lines):
             current_heading_level = self._get_heading_level(line)
             
-            # Check if we're transitioning to a level-2 heading from a different level-2
+            # If we encounter a new level-2 heading and we had a previous level-2 section,
+            # insert </break> at the end of the previous section (before this new heading)
             if current_heading_level == 2 and last_heading_level == 2:
-                # Insert break before the new level-2 heading
                 processed_lines.append('</break>')
-                logger.debug(f"Inserted section break before: {line.strip()[:50]}...")
+                logger.debug(f"Inserted section break after previous level-2 section")
+            
+            # If we encounter a level-1 heading after a level-2, also insert break
+            elif current_heading_level == 1 and last_heading_level == 2:
+                processed_lines.append('</break>')
+                logger.debug(f"Inserted section break before level-1 heading")
             
             processed_lines.append(line)
             
             # Update last heading level if this line is a heading
             if current_heading_level > 0:
                 last_heading_level = current_heading_level
+                if current_heading_level == 2:
+                    last_level2_index = len(processed_lines) - 1
+        
+        # Insert </break> at the end of the last level-2 section if document ends with one
+        if last_heading_level == 2:
+            processed_lines.append('</break>')
+            logger.debug(f"Inserted section break at end of document")
         
         return '\n'.join(processed_lines)
     
