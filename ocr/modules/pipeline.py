@@ -7,8 +7,6 @@ import logging
 import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-import os
-import concurrent.futures
 
 from .digital_parser import DigitalParser
 from .pdf_converter import PDFConverter
