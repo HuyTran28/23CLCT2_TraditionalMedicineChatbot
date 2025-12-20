@@ -357,18 +357,4 @@ class EasyDatasetProcessor:
         return output_path
 
 
-if __name__ == "__main__":
-    # Example usage
-    processor = EasyDatasetProcessor(chunk_size=512, overlap=50)
-    
-    # Process OCR results
-    dataset = processor.process_ocr_results(
-        "output/document_ocr_results.json",
-        "output/document_easydataset.json"
-    )
-    
-    # Export for Q&A generation
-    processor.export_for_qa_generation(dataset, "output/document_qa.json")
-    
-    # Export for retrieval
-    processor.export_for_retrieval(dataset, "output/document_retrieval.json")
+

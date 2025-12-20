@@ -146,32 +146,3 @@ class Preprocessor:
             saved_paths.append(out_path)
 
         return saved_paths
-
-
-def deskew_page(image: np.ndarray, max_angle: float = 15.0) -> np.ndarray:
-    return Preprocessor.deskew_page(image, max_angle=max_angle)
-
-
-def enhance_contrast(
-    image: np.ndarray,
-    clip_limit: float = 3.0,
-    tile_grid_size: int = 8,
-    sharpen_strength: float = 1.5,
-) -> np.ndarray:
-    return Preprocessor.enhance_contrast(
-        image,
-        clip_limit=clip_limit,
-        tile_grid_size=tile_grid_size,
-        sharpen_strength=sharpen_strength,
-    )
-
-
-def crop_images(
-    image: np.ndarray,
-    bboxes: Sequence[Sequence[int]],
-    prefix: str = "figure",
-    ext: str = ".png",
-    output_dir: Union[str, Path] = "figures",
-) -> List[Path]:
-    pre = Preprocessor(output_dir=output_dir)
-    return pre.crop_images(image, bboxes, prefix=prefix, ext=ext)

@@ -8,12 +8,12 @@ import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from .digital_parser import DigitalParser
+from ..processing.digital_parser import DigitalParser
 from .pdf_converter import PDFConverter
 from .ocr_engine import OCREngine
-from .exporter import WordExporter
-from .markdown_processor import MarkdownProcessor
-from .metrics import PipelineMetrics
+from ..export.exporter import WordExporter
+from ..processing.markdown_processor import MarkdownProcessor
+from ..utils.metrics import PipelineMetrics
  
 
 logger = logging.getLogger(__name__)

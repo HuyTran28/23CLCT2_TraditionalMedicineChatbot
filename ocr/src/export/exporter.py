@@ -793,7 +793,3 @@ class WordExporter:
         doc.save(output_path)
         return output_path
 
-if __name__ == "__main__":
-    # Example usage
-    exporter = WordExporter()
-    exporter.write_to_word("vietnamese_ocr_results.json", "output.docx")

@@ -6,7 +6,7 @@ import sys
 import logging
 from pathlib import Path
 
-from modules.pipeline import OCRPipeline
+from src.core.pipeline import OCRPipeline
 
 # Setup logging
 logging.basicConfig(
@@ -219,7 +219,7 @@ def main():
         # Generate EasyDataset format if requested
         if args.easydataset:
             print("\nGenerating EasyDataset format...")
-            from modules.easydataset_processor import EasyDatasetProcessor
+            from src.processing.easydataset_processor import EasyDatasetProcessor
             
             processor = EasyDatasetProcessor(chunk_size=512, overlap=50)
             
