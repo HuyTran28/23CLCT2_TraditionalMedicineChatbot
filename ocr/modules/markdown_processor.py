@@ -677,7 +677,18 @@ class MarkdownProcessor:
                     image_id = img.get('image_id', f'img_{idx}')
                     
                     # Create a markdown reference with image ID
-                    image_reference = f"![id: {image_id}]({image_id}.png)"
+                    img_filename = None
+                    if isinstance(img, dict) and img.get("output_path"):
+                        img_filename = Path(img["output_path"]).name
+                    if not img_filename:
+                        img_filename = f"{image_id}.png"
+
+                    # markdown nằm trong output/, ảnh nằm trong output/extracted_images/
+                    image_reference = f"![id: {image_id}](extracted_images/{img_filename})"
+
+                    # (tuỳ chọn) nếu sau này ảnh có bbox/page (digital) thì gắn luôn comment
+                    if isinstance(img, dict) and img.get("page") and img.get("bbox"):
+                        image_reference += f"\n<!-- page={img['page']} bbox={tuple(img['bbox'])} -->"
                     result = result.replace(placeholder, image_reference, 1)
                     
                     logger.debug(f"Injected image ID: {image_id} at placeholder {placeholder}")

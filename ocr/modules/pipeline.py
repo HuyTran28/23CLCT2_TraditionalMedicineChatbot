@@ -148,13 +148,40 @@ class OCRPipeline:
             raise
     
     def _process_digital(self, pdf_path: Path, output_path: Path) -> Path:
-        """Process digital PDF using pdf2docx"""
+        """Process digital PDF: pdf2docx + extract markdown/images (with bbox)"""
         try:
+            # 1) DOCX như cũ
             self.digital_parser.convert(pdf_path, output_path)
+
+            # 2) Markdown + embedded images
+            md_text, images = self.digital_parser.extract_markdown_with_images(
+                pdf_path=pdf_path,
+                images_output_dir=self.images_output_dir,  # output/extracted_images
+                image_prefix=pdf_path.stem,
+                add_bbox_comment=True,
+            )
+
+            # (tuỳ chọn) chạy post-process nhẹ (fix markdown + section breaks + correction nếu bật)
+            md_text = self.markdown_processor.process(md_text, images=None)
+
+            markdown_path = self.output_dir / f"{pdf_path.stem}_digital_results.md"
+            with open(markdown_path, "w", encoding="utf-8") as f:
+                f.write(md_text)
+
+            # 3) Metrics
+            if images:
+                self.metrics.add_images_extracted([img["output_path"] for img in images])
+
+            self.metrics.set_line_count(len(md_text.splitlines()))
+            self.metrics.set_sample_count(self._count_samples(md_text, images))
+            self.metrics.set_output_files_size(markdown_path=markdown_path, docx_path=output_path)
+
             return output_path
+
         except Exception as e:
             logger.error(f"Digital conversion failed: {e}")
             raise
+
     
     def _process_scanned(self, pdf_path: Path, output_path: Path) -> Path:
         """Process scanned PDF using marker-pdf OCR pipeline"""

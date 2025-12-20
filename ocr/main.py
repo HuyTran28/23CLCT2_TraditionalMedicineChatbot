@@ -201,8 +201,9 @@ def main():
         print(pipeline.metrics.get_formatted_summary())
         
         # Save metrics to JSON
-        metrics_path = pipeline.metrics.save_metrics_json()
-        print(f"Metrics saved to: {metrics_path}")
+        metrics_path = pipeline.metrics.save_metrics_json(Path(args.output) / "processing_results.json")
+        print(f"Processing results saved to: {metrics_path}")
+
         
         # Display organized images info
         images_dir = pipeline.images_output_dir

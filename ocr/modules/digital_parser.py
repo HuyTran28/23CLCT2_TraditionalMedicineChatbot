@@ -2,6 +2,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Optional
+import io
+from PIL import Image
+
 
 try:
     from pdf2docx import Converter
@@ -42,6 +45,87 @@ class DigitalParser:
     #    +High → digital → True
     #    +Low → scanned → False
     # -Catch exceptions to avoid crashing.
+
+    @staticmethod
+    def extract_markdown_with_images(
+        pdf_path: str | Path,
+        images_output_dir: str | Path,
+        image_prefix: str | None = None,
+        add_bbox_comment: bool = True,
+    ) -> tuple[str, list[dict]]:
+        """
+        Extract markdown from a digital PDF + extract embedded images.
+        Returns:
+            markdown_text, images_info (each has: image_id, output_path, page, bbox)
+        """
+        if fitz is None:
+            raise RuntimeError("PyMuPDF (fitz) is required to extract markdown/images.")
+
+        pdf_path = Path(pdf_path)
+        images_output_dir = Path(images_output_dir)
+        images_output_dir.mkdir(parents=True, exist_ok=True)
+
+        prefix = image_prefix or pdf_path.stem
+        doc = fitz.open(str(pdf_path))
+
+        parts: list[str] = []
+        images: list[dict] = []
+        img_idx = 0
+
+        parts.append(f"# {pdf_path.stem}\n")
+
+        for pno in range(len(doc)):
+            page = doc.load_page(pno)
+            parts.append(f"\n\n## Page {pno+1}\n")
+
+            d = page.get_text("dict")
+            blocks = sorted(d.get("blocks", []), key=lambda b: (b["bbox"][1], b["bbox"][0]))
+
+            for b in blocks:
+                if b.get("type") == 0:
+                    # text block
+                    lines = []
+                    for ln in b.get("lines", []):
+                        line_text = "".join(span.get("text", "") for span in ln.get("spans", []))
+                        line_text = line_text.replace("\u00a0", " ").rstrip()
+                        if line_text.strip():
+                            lines.append(line_text)
+                    if lines:
+                        parts.append("\n".join(lines) + "\n")
+
+                elif b.get("type") == 1:
+                    # image block
+                    raw = b.get("image", b"")
+                    bbox = b.get("bbox", None)
+
+                    if not raw:
+                        continue
+
+                    img_idx += 1
+                    image_id = f"{prefix}_img_{img_idx:03d}"
+                    out_path = images_output_dir / f"{image_id}.png"
+
+                    # save as PNG for consistency
+                    try:
+                        im = Image.open(io.BytesIO(raw))
+                        im.save(out_path, format="PNG")
+                    except Exception:
+                        # fallback: write raw bytes (may be non-png)
+                        out_path.write_bytes(raw)
+
+                    # markdown in output/, images in output/extracted_images/
+                    parts.append(f"![id: {image_id}](extracted_images/{out_path.name})")
+                    if add_bbox_comment and bbox:
+                        parts.append(f"<!-- page={pno+1} bbox={tuple(bbox)} -->\n")
+
+                    images.append({
+                        "image_id": image_id,
+                        "output_path": str(out_path),
+                        "page": pno + 1,
+                        "bbox": bbox,
+                    })
+
+        return "\n".join(parts).strip() + "\n", images
 
     @staticmethod
     def is_digital_pdf(pdf_path: str | Path, min_text_ratio: float = 0.001) -> bool:
