@@ -265,6 +265,22 @@ class MarkdownProcessor:
     def _fix_with_underthesea(self, text: str) -> str:
         """Use underthesea for Vietnamese spell-checking with improved handling"""
         from underthesea import word_tokenize
+        from spellchecker import SpellChecker
+        
+        # Vietnamese word list for spell checking
+        vietnamese_words = [
+            'chữa', 'thuốc', 'bệnh', 'tác dụng', 'chất', 'chứng', 'thể', 'cơ thể',
+            'là', 'có', 'từ', 'được', 'như', 'khi', 'với', 'số', 'tại', 'nên', 'thì',
+            'trong', 'cho', 'của', 'hay', 'và', 'này', 'đó', 'kể', 'tên', 'chưa', 'đã',
+            'một', 'hơn', 'cũng', 'những', 'nhưng', 'trên', 'dưới', 'sau', 'trước', 'giữa',
+            'hiện', 'thực', 'chính', 'ở', 'được', 'như', 'khi', 'với', 'số', 'tại', 'nên',
+            'thì', 'trong', 'cho', 'của', 'hay', 'và', 'này', 'đó', 'kể', 'tên', 'chưa', 'đã',
+            'một', 'hơn', 'cũng', 'những'
+        ]
+        
+        # Initialize spell checker with Vietnamese words
+        spell = SpellChecker(language=None)
+        spell.word_frequency.load_words(vietnamese_words)
         
         # Process in smaller chunks (1000 chars) to maintain context
         chunks = self._split_into_chunks(text, 1000)
@@ -282,9 +298,21 @@ class MarkdownProcessor:
                     corrected_lines.append(line)
                     continue
                 
-                # Apply enhanced corrections
                 try:
-                    corrected_line = self._apply_enhanced_corrections(line)
+                    # Tokenize to merge OCR-split words
+                    tokens = word_tokenize(line)
+                    tokenized_line = ' '.join(tokens) if isinstance(tokens, list) else tokens
+                    # Normalize
+                    normalized_line = self._normalize_tokenized_text(tokenized_line)
+                    # Apply spell checking to individual words
+                    words = normalized_line.split()
+                    corrected_words = []
+                    for word in words:
+                        corrected_word = spell.correction(word)
+                        corrected_words.append(corrected_word if corrected_word else word)
+                    spell_corrected_line = ' '.join(corrected_words)
+                    # Apply enhanced corrections
+                    corrected_line = self._apply_enhanced_corrections(spell_corrected_line)
                     corrected_lines.append(corrected_line)
                 except Exception as e:
                     logger.debug(f"Error processing line: {e}")
@@ -296,7 +324,7 @@ class MarkdownProcessor:
     
     def _fix_with_pyvi(self, text: str) -> str:
         """Use pyvi for Vietnamese spell-checking with improved handling"""
-        from pyvi import ViTokenizer
+        from pyvi import ViTokenizer, ViDau
         
         # Process in smaller chunks (1000 chars)
         chunks = self._split_into_chunks(text, 1000)
@@ -314,8 +342,13 @@ class MarkdownProcessor:
                     continue
                 
                 try:
-                    # Apply enhanced corrections
-                    corrected_line = self._apply_enhanced_corrections(line)
+                    # Tokenize to merge OCR-split words
+                    tokenized_line = ViTokenizer.tokenize(line)
+                    # Add tone marks to fix spelling
+                    accented_line = ViDau.add_accent(tokenized_line)
+                    # Normalize before applying regex fixes
+                    normalized_line = self._normalize_tokenized_text(accented_line)
+                    corrected_line = self._apply_enhanced_corrections(normalized_line)
                     corrected_lines.append(corrected_line)
                 except Exception as e:
                     logger.debug(f"Error processing line: {e}")
@@ -324,6 +357,13 @@ class MarkdownProcessor:
             corrected_chunks.append('\n'.join(corrected_lines))
         
         return '\n'.join(corrected_chunks)
+
+    def _normalize_tokenized_text(self, tokenized_line: str) -> str:
+        """Normalize tokenizer output by removing underscores and extra spaces."""
+        cleaned = tokenized_line.replace('_', ' ')
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        cleaned = re.sub(r'\s+([.,;:!?])', r'\1', cleaned)
+        return cleaned.strip()
     
     def _apply_enhanced_corrections(self, line: str) -> str:
         """

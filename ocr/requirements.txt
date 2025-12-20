@@ -10,6 +10,7 @@ matplotlib>=3.8.0
 
 underthesea>=6.0.0
 pyvi>=0.1.1
+pyspellchecker>=0.7.2
 
 opencv-contrib-python>=4.8.0.74
 opencv-python>=4.8.0.74
