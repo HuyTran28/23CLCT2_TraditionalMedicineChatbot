@@ -1,0 +1,4 @@
+﻿pydantic==2.12.5
+llama-index
+llama-index-llms-groq
+python-dotenv
