@@ -160,36 +160,35 @@ class MedicalDataExtractor:
 
         cleaned_text = _normalize_whitespace(_dedupe_consecutive_lines(text))
 
+        # Make the prompt schema-driven so this extractor works across many schemas.
+        schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+        allowed_keys = ", ".join(schema.model_fields.keys())
+
         prompt_template = f"""
-Bạn là chuyên gia văn bản y học/cây thuốc tiếng Việt. Nhiệm vụ: trích xuất dữ liệu có cấu trúc từ OCR.
+Bạn là chuyên gia trích xuất dữ liệu tiếng Việt từ văn bản OCR (y học/cây thuốc). Nhiệm vụ: tạo JSON đúng schema.
 
 Ngữ cảnh (nếu có): {context_hint}
 
 Văn bản OCR:
 {{text}}
 
-Hãy chuyển văn bản OCR thành JSON theo đúng schema bên dưới.
-
-Quy tắc quan trọng (để chất lượng tốt và ổn định):
-1) KHÔNG bịa thông tin: không tự nghĩ ra tên khoa học, bệnh điều trị, bộ phận dùng... nếu văn bản không nói rõ.
-    - Nếu không có: dùng null (cho Optional) hoặc [] (cho List) hoặc "" chỉ khi field bắt buộc là string.
-2) Không lặp lại câu/đoạn: nếu OCR có câu trùng, chỉ giữ 1 lần.
-3) Phân loại đúng nội dung vào field:
-    - botanical_features: mô tả hình thái (thân/lá/hoa/quả/hạt...)
-    - distribution_and_ecology: nơi mọc, sinh thái, hoặc thông tin trồng/canh tác (ví dụ: "được trồng ở trường học")
-    - parts_used: chỉ liệt kê bộ phận dùng làm thuốc/chiết xuất (tách thành danh sách)
-    - properties: tính vị (vị..., tính...)
-    - pharmacological_effects: công năng/tác dụng dạng động từ (ví dụ: "giải độc")
-    - treats: bệnh/triệu chứng cụ thể (nếu không có trong văn bản => [])
-4) Giữ nguyên thuật ngữ tiếng Việt, không dịch.
-5) Kiểu dữ liệu nghiêm ngặt:
-    - List luôn là mảng JSON (kể cả rỗng [])
-    - Optional có thể là null
-
-Chỉ trả về JSON hợp lệ, không kèm giải thích.
+Yêu cầu bắt buộc:
+1) Chỉ xuất ra MỘT đối tượng JSON hợp lệ (không kèm giải thích, không markdown, không code fence).
+2) JSON phải khớp schema bên dưới và có thể được validate.
+3) KHÔNG bịa thông tin: chỉ dùng thông tin có trong văn bản OCR.
+4) Không tạo thêm key ngoài schema. Danh sách key hợp lệ (top-level): {allowed_keys}
+5) Kiểu dữ liệu nghiêm ngặt theo schema:
+   - Field kiểu List luôn là mảng JSON (kể cả rỗng: [])
+   - Field Optional có thể là null khi không có thông tin
+   - Field bắt buộc:
+       - Nếu là string: dùng "" khi không có thông tin
+       - Nếu là List: dùng [] khi không có thông tin
+       - Nếu là object bắt buộc: tạo object tối thiểu theo schema và không bịa nội dung
+6) Dọn nhiễu OCR: nếu văn bản có câu/đoạn trùng lặp, chỉ giữ một lần trong nội dung trích xuất.
+7) Giữ nguyên thuật ngữ tiếng Việt, không dịch.
 
 Schema JSON:
-{schema.model_json_schema()}
+{schema_json}
 """
         
         for attempt in range(self.retry_count):
@@ -214,8 +213,8 @@ Schema JSON:
             except Exception as e:
                 logger.error(f"✗ Extraction error: {str(e)[:200]}")
                 raise
-        
-        return None
+
+        raise ValueError(f"Failed to extract after {self.retry_count} attempts")
     
     def extract_batch(
         self,
@@ -284,6 +283,13 @@ Schema JSON:
 # ============================================================================
 
 if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
     from schemas.medical_schemas import MedicinalPlant
     
     # Initialize
