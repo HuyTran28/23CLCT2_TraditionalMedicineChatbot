@@ -3,6 +3,15 @@ from typing import List, Optional
 from enum import Enum
 
 
+# ---------------------------------------------------------------------------
+# Helper: structured info on what part is used and how
+# ---------------------------------------------------------------------------
+class PartUsage(BaseModel):
+    part: str = Field(..., description="Bộ phận dùng")
+    usage_description: Optional[str] = Field(
+        default=None,
+        description="Cách sử dụng hoặc ghi chú về dịch liệu"
+    )
 # ============================================================================
 # SCHEMA 1: Medicinal Plants & Herbs (Cây cảnh - Cây thuốc)
 # ============================================================================
@@ -27,8 +36,9 @@ class MedicinalPlant(BaseModel):
         ...,
         description="Tên chính của cây"
     )
-    other_names: str = Field(
-        description="Tên gọi khác"
+    other_names: Optional[str] = Field(
+        default=None,
+        description="Tên gọi khác (một tên, nếu có)"
     )
     scientific_name: Optional[str] = Field(
         default=None,
@@ -42,9 +52,9 @@ class MedicinalPlant(BaseModel):
         default=None,
         description="Nơi mọc, mùa hoa quả"
     )
-    parts_used: List[str] = Field(
+    parts_used: List[PartUsage] = Field(
         default_factory=list,
-        description="Các bộ phận dùng làm thuốc (e.g., ['Lá', 'Rễ'])"
+        description="Danh sách bộ phận dùng kèm cách dùng cụ thể"
     )
     properties: str = Field(
         ...,
@@ -63,7 +73,12 @@ class MedicinalPlant(BaseModel):
         json_schema_extra = {
             "example": {
                 "plant_name": "Cây Bách xù",
-                "other_names": ["Cốt tía", "Mạch môn"],
+                "other_names": "Cốt tía",
+                "parts_used": [
+                    {"part": "Cành", "usage_description": "Cất tinh dầu"},
+                    {"part": "Lá", "usage_description": "Dùng tươi"},
+                    {"part": "Hạt", "usage_description": "Ép lấy dầu"}
+                ],
                 "botanical_features": "Cây gỗ cao 2-3m...",
                 "properties": "Vị cay, tính ấm",
                 "pharmacological_effects": ["thanh nhiệt"],
