@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List
 from urllib.parse import quote
@@ -57,6 +58,24 @@ _ROUTER = build_router_query_engine(vector_store=_VS, llm=_LLM, verbose=False)
 
 _IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\((?P<url>[^\)]+)\)")
 _IMAGE_HTML_RE = re.compile(r"<img[^>]+src=[\"'](?P<url>[^\"']+)[\"']", re.IGNORECASE)
+
+# When users explicitly ask about a plant's botanical features (đặc điểm thực vật / mô tả thân-lá-hoa-quả),
+# we always include images in the response payload so the UI can render them.
+_BOTANICAL_FEATURES_Q_RE = re.compile(
+    r"(botanical\s*[_-]?\s*features|"
+    r"đặc\s*điểm\s*(thực\s*vật|hình\s*thái)|"
+    r"mô\s*tả\s*(cây|thân|lá|hoa|quả)|"
+    r"hình\s*dáng\s*(cây|thân|lá|hoa|quả)|"
+    r"đặc\s*điểm\s*(thân|lá|hoa|quả)|"
+    r"(nhìn|trông)\s*(ra\s*sao|như\s*thế\s*nào)|"
+    r"(cho\s*(xem|mình)\s*)?(ảnh|hình)\s*(cây|của\s*cây)?|"
+    r"hình\s*minh\s*họa)",
+    re.IGNORECASE,
+)
+
+
+def _is_botanical_features_question(question: str) -> bool:
+    return bool(_BOTANICAL_FEATURES_Q_RE.search(question or ""))
 
 
 def _workspace_root() -> Path:
@@ -147,11 +166,113 @@ def _extract_image_paths_from_markdown(md_path: Path, around_line: int | None, *
     return out
 
 
-def _gather_images_from_chunks(index_type: str, chunks: List[Any]) -> List[Dict[str, str]]:
+def _strip_accents(s: str) -> str:
+    # Vietnamese-friendly comparison: remove diacritics for robust substring checks.
+    s = unicodedata.normalize("NFD", s)
+    return "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+
+
+def _norm_text(s: str) -> str:
+    s = (s or "").strip().lower()
+    s = _strip_accents(s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+_NAME_STOPWORDS = {
+    # common Vietnamese words around “what does it look like” queries
+    "cay",
+    "nhin",
+    "trong",
+    "ra",
+    "sao",
+    "nhu",
+    "the",
+    "nao",
+    "giong",
+    "dang",
+    "hinh",
+    "anh",
+    "cho",
+    "xem",
+    "minh",
+    "hoa",
+    "cua",
+    "la",
+    "co",
+}
+
+
+def _tokens(s: str) -> List[str]:
+    # Keep only letters/digits; split into tokens.
+    t = _norm_text(s)
+    toks = re.findall(r"[a-z0-9]+", t)
+    return [x for x in toks if x and x not in _NAME_STOPWORDS]
+
+
+def _maybe_filter_chunks_for_images(index_type: str, chunks: List[Any], question: str | None) -> List[Any]:
+    """Prefer chunks whose entity name matches the question.
+
+    This avoids returning images from nearby but unrelated chunks.
+    """
+    if not chunks:
+        return chunks
+    if not isinstance(question, str) or not question.strip():
+        return chunks[:1]
+
+    qn = _norm_text(question)
+
+    # Focus tokens: words immediately after “cây” until the first stopword.
+    q_words = re.findall(r"[a-z0-9]+", qn)
+    focus_tokens: List[str] = []
+    try:
+        cay_i = q_words.index("cay")
+        for w in q_words[cay_i + 1 :]:
+            if w in _NAME_STOPWORDS:
+                break
+            focus_tokens.append(w)
+    except ValueError:
+        focus_tokens = []
+    # If we extracted something meaningful after “cây”, match on that; else use all tokens.
+    qtok = [t for t in (focus_tokens or _tokens(question)) if t]
+    qset = set(qtok)
+
+    name_key = "plant_name" if index_type in {"herbs_plants", "herbs_vegetables"} else None
+    if not name_key:
+        return chunks[:1]
+
+    matched: List[Any] = []
+    for ch in chunks:
+        meta = getattr(ch, "metadata", None) if hasattr(ch, "metadata") else (ch.get("metadata") if isinstance(ch, dict) else None)
+        if not isinstance(meta, dict):
+            continue
+        pname = meta.get(name_key)
+        if not isinstance(pname, str) or not pname.strip():
+            continue
+        ptok = _tokens(pname)
+        if not ptok:
+            continue
+        # Strict token containment to avoid false positives (e.g., 'oi' matching inside 'voi').
+        if set(ptok).issubset(qset):
+            matched.append(ch)
+
+    # If we got a direct match, use only those; else fall back to top-1.
+    return matched if matched else chunks[:1]
+
+
+def _gather_images_from_chunks(index_type: str, chunks: List[Any], *, question: str | None = None) -> List[Dict[str, str]]:
     imgs: List[Dict[str, str]] = []
     seen = set()
+    chunks = _maybe_filter_chunks_for_images(index_type, chunks, question)
     for ch in chunks:
-        meta = getattr(ch, "metadata", None) or ch.get("metadata") if isinstance(ch, dict) else {}
+        # NOTE: Be explicit here. Python's conditional-expression precedence can
+        # otherwise drop metadata for non-dict chunk objects (e.g., RetrievedChunk).
+        if hasattr(ch, "metadata"):
+            meta = getattr(ch, "metadata")
+        elif isinstance(ch, dict):
+            meta = ch.get("metadata")
+        else:
+            meta = {}
         if not isinstance(meta, dict):
             continue
         images = meta.get("images") if isinstance(meta.get("images"), list) else None
@@ -215,6 +336,10 @@ def query_internal(question: str, include_images: bool = True, verbose: bool = F
         raise ValueError("Empty question")
     q = question.strip()
 
+    # Override: for botanical-features questions, always include images.
+    if _is_botanical_features_question(q):
+        include_images = True
+
     # Use router's selection logic if available
     sel = getattr(_ROUTER, "_select_index_type", None)
     if sel:
@@ -254,7 +379,7 @@ def query_internal(question: str, include_images: bool = True, verbose: bool = F
     else:
         answer = "Không tìm thấy trình trả lời phù hợp trên server."
 
-    images = _gather_images_from_chunks(index_type, chunks) if include_images else []
+    images = _gather_images_from_chunks(index_type, chunks, question=q) if include_images else []
 
     sources = []
     for i, ch in enumerate(chunks, start=1):
@@ -271,6 +396,8 @@ async def api_query(req: Request):
     body = await req.json()
     q = body.get("question")
     include_images = bool(body.get("include_images", True))
+    if isinstance(q, str) and _is_botanical_features_question(q):
+        include_images = True
     try:
         res = query_internal(q, include_images=include_images)
     except Exception as e:
