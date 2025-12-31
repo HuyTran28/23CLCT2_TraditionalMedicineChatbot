@@ -196,9 +196,8 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
         if not context:
             return Response(response="Không tìm thấy dữ liệu phù hợp trong chỉ mục.")
         answer = self._answer(q, context)
-        # TEMP: disable images to avoid huge base64 responses overflowing output.
-        # images_md = self._images_markdown(chunks)
-        # answer = self._inject_images_before_sources(answer, images_md)
+        images_md = self._images_markdown(chunks)
+        answer = self._inject_images_before_sources(answer, images_md)
         return Response(response=answer)
 
     async def aquery(self, query_str: Any, **kwargs: Any) -> Response:
