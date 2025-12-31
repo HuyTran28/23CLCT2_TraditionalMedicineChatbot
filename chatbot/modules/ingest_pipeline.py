@@ -149,17 +149,17 @@ def extract_chunks_to_jsonl(
     out_path = Path(out_jsonl_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # If not resuming, remove any existing JSONL to start fresh (avoid accidental re-use).
+    # If not resuming, start fresh.
     if not resume and out_path.exists():
         try:
             out_path.unlink()
         except Exception:
-            # If unlink fails, we'll truncate when opening below.
+            # If unlink fails on Windows (e.g., file open in editor), we'll truncate via open('w').
             pass
 
     # Resume support: if JSONL already exists, skip chunks that already have data.
     existing_ids: set[str] = set()
-    if out_path.exists():
+    if resume and out_path.exists():
         try:
             with out_path.open("r", encoding="utf-8") as rf:
                 for line in rf:
@@ -185,7 +185,8 @@ def extract_chunks_to_jsonl(
             existing_ids = set()
 
     n_ok = 0
-    with out_path.open("a", encoding="utf-8") as f:
+    open_mode = "a" if resume else "w"
+    with out_path.open(open_mode, encoding="utf-8") as f:
         for ch in chunks:
             rid = f"{ch.source_path}:#{ch.chunk_index}"
             if rid in existing_ids:

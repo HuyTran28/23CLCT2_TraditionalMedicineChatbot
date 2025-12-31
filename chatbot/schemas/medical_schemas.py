@@ -182,11 +182,30 @@ class MedicinalPlant(BaseModel):
             cleaned_ta = []
             for item in ta:
                 if not isinstance(item, dict):
-                    cleaned_ta.append(item)
+                    # RemedyApplication requires an object with an indication; drop junk.
                     continue
+
                 item2 = dict(item)
+
+                # Coerce indication to a non-empty string; otherwise drop this entry.
+                raw_indication = item2.get("indication")
+                if raw_indication is None:
+                    continue
+                if isinstance(raw_indication, list):
+                    raw_indication = ", ".join(str(x).strip() for x in raw_indication if str(x).strip())
+                indication = str(raw_indication).strip()
+                if not indication:
+                    continue
+                item2["indication"] = indication
+
+                # Normalize optional-ish strings.
                 if item2.get("usage_instructions") is None:
                     item2["usage_instructions"] = ""
+                if isinstance(item2.get("ingredients"), list):
+                    item2["ingredients"] = ", ".join(
+                        str(x).strip() for x in item2["ingredients"] if str(x).strip()
+                    )
+
                 cleaned_ta.append(item2)
             d["therapeutic_applications"] = cleaned_ta
 
