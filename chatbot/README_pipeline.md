@@ -68,7 +68,7 @@ These commands produce one JSON object per line in `data/processed/*.jsonl`.
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/herbs_plants_cay-canh.jsonl
+py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/herbs_plants_cay-canh.jsonl --resume
 ```
 
 **Book: Cây cảnh – cây thuốc trong nhà trường (recipes)**
@@ -78,7 +78,7 @@ py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema RemedyRecipe --chunk-by book --index-type remedies --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/remedies_cay-canh.jsonl
+py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema RemedyRecipe --chunk-by book --index-type remedies --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/remedies_cay-canh.jsonl --resume
 ```
 
 **Book: Cây rau làm thuốc**
@@ -88,7 +88,7 @@ py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-rau-lam-thuoc/cay-rau-lam-thuoc.md --schema MedicinalVegetable --chunk-by book --index-type herbs_vegetables --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/herbs_vegetables_cay-rau.jsonl
+py main.py ingest --input data/raw/cay-rau-lam-thuoc/cay-rau-lam-thuoc.md --schema MedicinalVegetable --chunk-by book --index-type herbs_vegetables --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/herbs_vegetables_cay-rau.jsonl --resume
 ```
 
 **Book: Cây thuốc, vị thuốc phòng và chữa bệnh nội tiết (syndromes / PHẦN THỨ HAI)**
@@ -98,7 +98,7 @@ py main.py ingest --input data/raw/cay-rau-lam-thuoc/cay-rau-lam-thuoc.md --sche
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md --schema EndocrineSyndrome --chunk-by book --index-type endocrine_syndromes --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/endocrine_syndromes_noi-tiet.jsonl
+py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md --schema EndocrineSyndrome --chunk-by book --index-type endocrine_syndromes --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/endocrine_syndromes_noi-tiet.jsonl --resume
 ```
 
 **Book: Cây thuốc, vị thuốc phòng và chữa bệnh nội tiết (plants / PHẦN THỨ BA)**
@@ -108,7 +108,7 @@ py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/c
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md --schema MedicinalPlant --chunk-by book --index-type endocrine_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/endocrine_plants_noi-tiet.jsonl
+py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md --schema MedicinalPlant --chunk-by book --index-type endocrine_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/endocrine_plants_noi-tiet.jsonl --resume
 ```
 
 **Book: Cấp cứu & chống độc**
@@ -118,7 +118,7 @@ py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/c
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cc_va_chong_doc_258/cc_va_chong_doc_258.md --schema EmergencyProtocol --chunk-by book --index-type emergency --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/emergency_cc.jsonl
+py main.py ingest --input data/raw/cc_va_chong_doc_258/cc_va_chong_doc_258.md --schema EmergencyProtocol --chunk-by book --index-type emergency --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/emergency_cc.jsonl --resume
 ```
 
 ## 2) Combine JSONL by `index_type`
