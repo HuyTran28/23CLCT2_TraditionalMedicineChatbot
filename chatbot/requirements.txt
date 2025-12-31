@@ -1,5 +1,6 @@
 ﻿pydantic==2.12.5
 llama-index
 llama-index-llms-groq
+llama-index-embeddings-huggingface
 python-dotenv
 pillow>=10.0.0
