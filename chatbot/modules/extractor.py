@@ -1,7 +1,9 @@
 import json
 import os
 import re
-from typing import Type, TypeVar, List, Optional
+import time
+import random
+from typing import Type, TypeVar, List, Optional, Any
 from pydantic import BaseModel
 import logging
 from dotenv import load_dotenv
@@ -13,11 +15,62 @@ load_dotenv()
 from llama_index.core.program import LLMTextCompletionProgram
 from llama_index.llms.groq import Groq
 
+# Book-aware splitting for extraction boundaries
+from modules.book_splitters import split_by_book
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 ModelT = TypeVar('ModelT', bound=BaseModel)
+
+
+class RateLimitPauseRequired(RuntimeError):
+    """Raised when Groq asks us to wait a long time (e.g., TPD exhaustion)."""
+
+
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """Best-effort detection for Groq rate limit responses.
+
+    LlamaIndex/Groq may surface different exception types depending on
+    dependency versions (httpx, groq SDK, etc.). We intentionally keep this
+    heuristic and defensive.
+    """
+    # Common shapes: exc.status_code, exc.response.status_code
+    sc = getattr(exc, "status_code", None)
+    if sc == 429:
+        return True
+    resp = getattr(exc, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 429:
+        return True
+
+    msg = str(exc) or ""
+    msg_low = msg.lower()
+    return ("429" in msg_low) or ("too many requests" in msg_low) or ("rate limit" in msg_low)
+
+
+def _get_retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """Extract Retry-After header (seconds) if present."""
+    headers: Any = None
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        headers = getattr(resp, "headers", None)
+    if headers is None:
+        headers = getattr(exc, "headers", None)
+    if headers is None:
+        return None
+
+    try:
+        ra = headers.get("retry-after") or headers.get("Retry-After")
+    except Exception:
+        return None
+
+    if ra is None:
+        return None
+    try:
+        return float(str(ra).strip())
+    except Exception:
+        return None
 
 
 def _normalize_whitespace(s: str) -> str:
@@ -109,7 +162,12 @@ class MedicalDataExtractor:
         api_key: Optional[str] = None,
         model: str = "llama-3.3-70b-versatile",
         temperature: float = 0.0,
-        retry_count: int = 3
+        max_tokens: int = 1024,
+        retry_count: int = 3,
+        rate_limit_retries: int = 8,
+        rate_limit_base_sleep_seconds: float = 2.0,
+        rate_limit_max_sleep_seconds: float = 60.0,
+        rate_limit_max_retry_after_seconds: float = 120.0,
     ):
         """
         Initialize the extractor.
@@ -119,6 +177,9 @@ class MedicalDataExtractor:
             model: Groq model name (llama-3.3-70b-versatile is fastest)
             temperature: 0.0 for deterministic medical extraction
             retry_count: How many times to retry on JSON errors
+            rate_limit_retries: Max retries when hitting 429 Too Many Requests
+            rate_limit_base_sleep_seconds: Base sleep when 429 has no Retry-After header
+            rate_limit_max_sleep_seconds: Cap for exponential backoff sleeps
         """
         self.api_key = api_key or os.getenv("GROQ_API_KEY")
         if not self.api_key:
@@ -128,9 +189,13 @@ class MedicalDataExtractor:
             api_key=self.api_key,
             model=model,
             temperature=temperature,
-            max_tokens=4096,  # Enough for detailed extraction
+            max_tokens=int(max_tokens),
         )
         self.retry_count = retry_count
+        self.rate_limit_retries = max(0, int(rate_limit_retries))
+        self.rate_limit_base_sleep_seconds = max(0.0, float(rate_limit_base_sleep_seconds))
+        self.rate_limit_max_sleep_seconds = max(0.0, float(rate_limit_max_sleep_seconds))
+        self.rate_limit_max_retry_after_seconds = max(0.0, float(rate_limit_max_retry_after_seconds))
         logger.info(f"Initialized Groq LLM: {model}")
     
     def extract_single(
@@ -191,7 +256,9 @@ Schema JSON:
 {schema_json}
 """
         
-        for attempt in range(self.retry_count):
+        json_attempt = 0
+        rate_attempt = 0
+        while True:
             try:
                 program = LLMTextCompletionProgram.from_defaults(
                     output_cls=schema,
@@ -202,25 +269,66 @@ Schema JSON:
 
                 result = program(text=cleaned_text)
                 result = _clean_model_instance(result)
-                logger.info(f"✓ Extraction successful (attempt {attempt + 1})")
+                logger.info("✓ Extraction successful")
                 return result
                 
             except json.JSONDecodeError as e:
-                logger.warning(f"✗ JSON parsing failed (attempt {attempt + 1}): {str(e)[:100]}")
-                if attempt == self.retry_count - 1:
-                    raise ValueError(f"Failed to extract after {self.retry_count} attempts") from e
+                json_attempt += 1
+                logger.warning(f"✗ JSON parsing failed (attempt {json_attempt}): {str(e)[:100]}")
+                if json_attempt >= self.retry_count:
+                    raise ValueError(f"Failed to extract after {self.retry_count} JSON attempts") from e
+                continue
             
             except Exception as e:
+                if _is_rate_limit_error(e):
+                    rate_attempt += 1
+                    if rate_attempt > self.rate_limit_retries:
+                        logger.error(f"✗ Rate limited too many times ({rate_attempt}); giving up")
+                        raise
+
+                    retry_after = _get_retry_after_seconds(e)
+                    # TPD exhaustion often comes with very large Retry-After (tens of minutes).
+                    # Don't block the whole run for that long; fail fast with a clear message.
+                    if (
+                        retry_after is not None
+                        and self.rate_limit_max_retry_after_seconds > 0
+                        and retry_after > self.rate_limit_max_retry_after_seconds
+                    ):
+                        msg = str(e)
+                        raise RateLimitPauseRequired(
+                            "Groq rate limit requires a long wait "
+                            f"(Retry-After={retry_after:.0f}s). This usually means TPD (tokens/day) "
+                            "or another long-window quota is exhausted. "
+                            "Wait for reset or switch to a higher-quota model/plan. "
+                            f"Original error: {msg}"
+                        ) from e
+
+                    if retry_after is not None and retry_after > 0:
+                        sleep_for = retry_after
+                    else:
+                        # Exponential backoff with jitter.
+                        backoff = self.rate_limit_base_sleep_seconds * (2 ** max(0, rate_attempt - 1))
+                        sleep_for = min(self.rate_limit_max_sleep_seconds, backoff)
+                        sleep_for += random.uniform(0.0, 0.75)
+
+                    logger.warning(
+                        "⚠ Groq rate limit (429). "
+                        + (f"Retry-After={retry_after}s. " if retry_after is not None else "No Retry-After header. ")
+                        + f"Sleeping {sleep_for:.2f}s then retrying (attempt {rate_attempt}/{self.rate_limit_retries})."
+                    )
+                    time.sleep(max(0.0, sleep_for))
+                    continue
+
                 logger.error(f"✗ Extraction error: {str(e)[:200]}")
                 raise
-
-        raise ValueError(f"Failed to extract after {self.retry_count} attempts")
     
     def extract_batch(
         self,
         texts: List[str],
         schema: Type[ModelT],
-        context_hint: str = ""
+        context_hint: str = "",
+        requests_per_minute: Optional[float] = 30.0,
+        jitter_seconds: float = 0.25
     ) -> List[ModelT]:
         """
         Extract multiple documents.
@@ -233,14 +341,25 @@ Schema JSON:
         Returns:
             List of validated Pydantic objects
         
-        Note: Respects Groq rate limit (30 req/min on free tier)
+        Note: Can throttle calls to respect Groq free-tier RPM.
         """
         results = []
+        min_interval = None
+        if requests_per_minute and requests_per_minute > 0:
+            min_interval = 60.0 / float(requests_per_minute)
+        last_call = 0.0
         for i, text in enumerate(texts):
             logger.info(f"Extracting {i+1}/{len(texts)}...")
+            if min_interval is not None:
+                now = time.monotonic()
+                elapsed = now - last_call
+                if elapsed < min_interval:
+                    sleep_for = (min_interval - elapsed) + random.uniform(0.0, max(0.0, float(jitter_seconds)))
+                    time.sleep(sleep_for)
             try:
                 obj = self.extract_single(text, schema, context_hint)
                 results.append(obj)
+                last_call = time.monotonic()
             except Exception as e:
                 logger.error(f"Failed on item {i}: {e}")
                 results.append(None)  # Mark failed extraction
@@ -251,7 +370,7 @@ Schema JSON:
         self,
         filepath: str,
         schema: Type[ModelT],
-        chunk_by: str = "section"  # "section" or "paragraph"
+        chunk_by: str = "book"  # "book", "section" or "paragraph"
     ) -> List[ModelT]:
         """
         Load and extract from a markdown file.
@@ -266,9 +385,20 @@ Schema JSON:
         """
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
-        
-        if chunk_by == "section":
-            # Split by markdown headers
+
+        if chunk_by == "book":
+            split_kind = None
+            schema_name = getattr(schema, "__name__", "")
+            if schema_name == "RemedyRecipe":
+                split_kind = "recipes"
+            elif schema_name == "MedicinalPlant":
+                split_kind = "plants"
+            elif schema_name == "EndocrineSyndrome":
+                split_kind = "syndromes"
+
+            chunks = split_by_book(filepath, content, split_kind=split_kind)
+        elif chunk_by == "section":
+            # Lightweight fallback: split by markdown headers
             chunks = [c.strip() for c in content.split('\n#') if c.strip()]
         else:
             # Split by blank lines

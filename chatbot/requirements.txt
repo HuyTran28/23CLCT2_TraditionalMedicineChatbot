@@ -2,3 +2,4 @@
 llama-index
 llama-index-llms-groq
 python-dotenv
+pillow>=10.0.0
