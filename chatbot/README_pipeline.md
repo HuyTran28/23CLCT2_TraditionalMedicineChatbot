@@ -172,7 +172,7 @@ The `query` command loads all 3 indices under `--persist-dir` and uses an LLM ro
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py query --persist-dir vector_data --backend disk --question "Cây gì trị ho gà?" --model llama-3.3-70b-versatile
+py main.py query --persist-dir vector_data --backend disk --question "Cây gì trị ho gà?"
 ```
 
 Notes:
