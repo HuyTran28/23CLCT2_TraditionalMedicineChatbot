@@ -249,13 +249,29 @@ def iter_objects_from_jsonl(
     jsonl_path: str,
     schema: Type[BaseModel],
 ) -> Iterator[BaseModel]:
+    def _loads_first_json_obj(line: str) -> Optional[Dict[str, Any]]:
+        s = (line or "").strip()
+        if not s:
+            return None
+        # Handle accidental concatenation ("}{") or leading junk.
+        start = s.find("{")
+        if start < 0:
+            return None
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(s[start:])
+        except Exception:
+            return None
+        return obj if isinstance(obj, dict) else None
+
     p = Path(jsonl_path)
     with p.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            rec = json.loads(line)
+            rec = _loads_first_json_obj(line)
+            if not rec:
+                continue
             if "data" not in rec:
                 continue
             yield schema(**rec["data"])
@@ -267,13 +283,28 @@ def iter_text_records_from_jsonl(
     index_type: str,
 ) -> Iterator[Tuple[str, Dict[str, Any], str]]:
     """Yield (text, metadata, id) for vector ingestion."""
+    def _loads_first_json_obj(line: str) -> Optional[Dict[str, Any]]:
+        s = (line or "").strip()
+        if not s:
+            return None
+        start = s.find("{")
+        if start < 0:
+            return None
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(s[start:])
+        except Exception:
+            return None
+        return obj if isinstance(obj, dict) else None
+
     p = Path(jsonl_path)
     with p.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            rec = json.loads(line)
+            rec = _loads_first_json_obj(line)
+            if not rec:
+                continue
             if "data" not in rec or "meta" not in rec:
                 continue
 
@@ -292,24 +323,85 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
         # MedicinalPlant-like
         plant = data.get("plant_name") or data.get("name") or ""
         other = data.get("other_names") or []
+        sci = data.get("scientific_name") or ""
         family = data.get("family") or ""
-        treats = data.get("treats") or []
-        props = data.get("properties") or ""
         feats = data.get("botanical_features") or data.get("botanical_description") or ""
+        dist = data.get("distribution_and_ecology") or ""
+        props = data.get("properties_and_dosage") or data.get("properties") or ""
+        pharm = data.get("pharmacological_effects") or []
+        parts_used = data.get("parts_used") or []
+        treats = data.get("treats") or []
+        warns = data.get("contraindications_warnings") or ""
+        apps = data.get("therapeutic_applications") or []
 
-        parts: list[str] = [
-            f"Plant: {plant}",
-            f"Other names: {', '.join(other) if isinstance(other, list) else other}",
-        ]
+        out: list[str] = []
+        if plant:
+            out.append(f"Tên cây: {plant}")
+        if other:
+            out.append(f"Tên gọi khác: {', '.join(other) if isinstance(other, list) else other}")
+        if sci:
+            out.append(f"Tên khoa học: {sci}")
         if family:
-            parts.append(f"Family: {family}")
-        if props:
-            parts.append(f"Properties: {props}")
+            out.append(f"Họ: {family}")
         if feats:
-            parts.append(f"Features: {feats}")
+            out.append(f"Đặc điểm thực vật: {feats}")
+        if dist:
+            out.append(f"Phân bố/Sinh thái: {dist}")
+        if props:
+            out.append(f"Tính vị/Công năng/Liều dùng: {props}")
+        if pharm:
+            out.append(
+                "Tác dụng dược lý: "
+                + (", ".join(pharm) if isinstance(pharm, list) else str(pharm))
+            )
+
+        # parts_used can be a list of dicts (PartUsage)
+        if isinstance(parts_used, list) and parts_used:
+            lines: list[str] = []
+            for p in parts_used:
+                if not isinstance(p, dict):
+                    continue
+                part = (p.get("part") or "").strip()
+                usage = (p.get("usage_description") or "").strip()
+                if part and usage:
+                    lines.append(f"- {part}: {usage}")
+                elif part:
+                    lines.append(f"- {part}")
+            if lines:
+                out.append("Bộ phận dùng:\n" + "\n".join(lines))
+
         if treats:
-            parts.append(f"Treats: {', '.join(treats) if isinstance(treats, list) else treats}")
-        return "\n".join(parts).strip()
+            out.append(
+                "Chỉ định/Trị: "
+                + (", ".join(treats) if isinstance(treats, list) else str(treats))
+            )
+
+        # therapeutic_applications (RemedyApplication)
+        if isinstance(apps, list) and apps:
+            app_lines: list[str] = []
+            for a in apps:
+                if not isinstance(a, dict):
+                    continue
+                indication = (a.get("indication") or "").strip()
+                ingredients = (a.get("ingredients") or "").strip()
+                usage = (a.get("usage_instructions") or "").strip()
+                if not (indication or ingredients or usage):
+                    continue
+                bits: list[str] = []
+                if indication:
+                    bits.append(f"Chỉ định: {indication}")
+                if ingredients:
+                    bits.append(f"Thành phần: {ingredients}")
+                if usage:
+                    bits.append(f"Cách dùng: {usage}")
+                app_lines.append("- " + " | ".join(bits))
+            if app_lines:
+                out.append("Ứng dụng cụ thể:\n" + "\n".join(app_lines))
+
+        if warns:
+            out.append(f"Chống chỉ định/Lưu ý: {warns}")
+
+        return "\n".join(out).strip()
 
     if index_type == "herbs_vegetables":
         name = data.get("plant_name") or ""
