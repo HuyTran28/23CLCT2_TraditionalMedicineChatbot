@@ -12,12 +12,10 @@ from modules.ingest_pipeline import (
 from modules.vector_store import MedicalVectorStore
 from schemas import medical_schemas
 
-
 def _get_schema_by_name(name: str):
     if not hasattr(medical_schemas, name):
         raise ValueError(f"Unknown schema: {name}")
     return getattr(medical_schemas, name)
-
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Traditional medicine chatbot pipeline")
@@ -104,7 +102,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     return p
 
-
 def cmd_ingest(args: argparse.Namespace) -> None:
     schema = _get_schema_by_name(args.schema)
 
@@ -141,8 +138,6 @@ def cmd_ingest(args: argparse.Namespace) -> None:
             print(f"Extraction complete. JSONL written to {Path(args.jsonl_out).resolve()}")
             return
 
-    # Vector store init is deferred so teammates can run --extract-only without
-    # downloading embedding models.
     vs = MedicalVectorStore(
         persist_dir=args.persist_dir,
         embedding_model=args.embed_model,
