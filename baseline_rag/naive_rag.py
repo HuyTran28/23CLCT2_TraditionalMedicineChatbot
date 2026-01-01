@@ -3,6 +3,8 @@ import shutil
 from pathlib import Path
 try:
     from dotenv import load_dotenv
+    # Load .env from the project root or current directory
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 except Exception:
     load_dotenv = None
 from llama_index.core import (
@@ -24,21 +26,7 @@ class NaiveMedicalRAG:
         - Chunking: Hierarchical/Structural (MarkdownNodeParser)
         """
         self.persist_dir = persist_dir
-        # Try to locate and load a .env file upward from this module's directory
-        def _find_dotenv(start: Path) -> str | None:
-            cur = start
-            while True:
-                candidate = cur / ".env"
-                if candidate.exists():
-                    return str(candidate)
-                if cur.parent == cur:
-                    return None
-                cur = cur.parent
-
-        if load_dotenv is not None:
-            env_path = _find_dotenv(Path(__file__).resolve().parent)
-            if env_path:
-                load_dotenv(env_path)
+        
         # Ensure required env var exists
         if not os.environ.get("GROQ_API_KEY"):
             raise ValueError("Chưa thiết lập biến môi trường GROQ_API_KEY")
@@ -110,9 +98,9 @@ class NaiveMedicalRAG:
         return str(response)
 
 if __name__ == "__main__":
-    # Test
+    DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
     test_files = [
-        "data/raw/cay-rau-lam-thuoc/cay-rau-lam-thuoc.md"
+        str(DATA_DIR / "cay-rau-lam-thuoc" / "cay-rau-lam-thuoc.md")
     ]
     try:
         # Nhớ xóa folder baseline_storage cũ trước khi chạy lần đầu code này

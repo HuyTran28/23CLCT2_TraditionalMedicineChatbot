@@ -4,13 +4,15 @@ import subprocess
 import os
 import time
 import json
+from pathlib import Path
 from naive_rag import NaiveMedicalRAG
 from groq import Groq  # Dùng client native của Groq cho linh hoạt phần Judge
 
 # --- CẤU HÌNH ---
-# Danh sách file Markdown đầu vào
+# Danh sách file Markdown đầu vào (moved to chatbot/data/raw)
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 INPUT_FILES = [
-    "data/raw/cay-rau-lam-thuoc/cay-rau-lam-thuoc.md",
+    str(DATA_DIR / "cay-rau-lam-thuoc" / "cay-rau-lam-thuoc.md"),
 ]
 
 TEST_QUESTIONS = [

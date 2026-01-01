@@ -1,6 +1,0 @@
-python-dotenv>=1.0.0
-llama-index
-transformers
-torch
-huggingface-hub
-groq

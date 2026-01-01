@@ -1,0 +1,10 @@
+llama-index-core
+llama-index-embeddings-huggingface
+llama-index-llms-groq
+llama-index-readers-file
+python-dotenv
+transformers
+torch
+huggingface-hub
+pandas
+groq
