@@ -687,7 +687,7 @@ def split_by_book(filepath: str, text: str, split_kind: Optional[str] = None) ->
 # EXAMPLE USAGE
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    example_path = "data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md"
+    example_path = "../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md"
     split_kind = "recipes"
     with open(example_path, "r", encoding="utf-8") as f:
         content = f.read()

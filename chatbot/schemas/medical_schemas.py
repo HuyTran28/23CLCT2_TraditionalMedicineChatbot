@@ -246,7 +246,7 @@ class MedicinalPlant(BaseModel):
                 "treats": ["ho gà", "mụn nhọt"],
                 "images": [
                     {
-                        "stored_path": "data/processed/images/cay-canh--cay-thuoc-trong-nha-truong_img_002.webp",
+                        "stored_path": "../data/processed/images/cay-canh--cay-thuoc-trong-nha-truong_img_002.webp",
                         "sha256": "<sha256>",
                     }
                 ],

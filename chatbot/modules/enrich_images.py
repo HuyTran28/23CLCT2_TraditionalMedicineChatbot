@@ -10,7 +10,7 @@ def enrich_record_with_images(
     record: BaseModel,
     chunk_text: str,
     source_markdown_path: str,
-    store_dir: str = "data/processed/images",
+    store_dir: str = "../data/processed/images",
     prefer_format: str = "webp",
     quality: int = 80,
 ) -> BaseModel:

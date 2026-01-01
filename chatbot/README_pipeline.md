@@ -47,7 +47,7 @@ Groq rate limits (429 Too Many Requests):
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/herbs_plants_cay-canh.jsonl
+py main.py ingest --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/herbs_plants_cay-canh.jsonl
 ```
 
 Supported schemas in this repo:
@@ -59,7 +59,7 @@ Supported schemas in this repo:
 
 ### Final extraction commands (all books)
 
-These commands produce one JSON object per line in `data/processed/*.jsonl`.
+These commands produce one JSON object per line in `../data/processed/*.jsonl`.
 
 **Book: Cây cảnh – cây thuốc trong nhà trường (plants)**
 - schema: `MedicinalPlant`
@@ -68,7 +68,7 @@ These commands produce one JSON object per line in `data/processed/*.jsonl`.
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/herbs_plants_cay-canh.jsonl --resume
+py main.py ingest --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/herbs_plants_cay-canh.jsonl --resume
 ```
 
 **Book: Cây cảnh – cây thuốc trong nhà trường (recipes)**
@@ -78,7 +78,7 @@ py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema RemedyRecipe --chunk-by book --index-type remedies --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/remedies_cay-canh.jsonl --resume
+py main.py ingest --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema RemedyRecipe --chunk-by book --index-type remedies --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/remedies_cay-canh.jsonl --resume
 ```
 
 **Book: Cây rau làm thuốc**
@@ -88,7 +88,7 @@ py main.py ingest --input data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-rau-lam-thuoc/cay-rau-lam-thuoc.md --schema MedicinalVegetable --chunk-by book --index-type herbs_vegetables --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/herbs_vegetables_cay-rau.jsonl --resume
+py main.py ingest --input ../data/raw/cay-rau-lam-thuoc/cay-rau-lam-thuoc.md --schema MedicinalVegetable --chunk-by book --index-type herbs_vegetables --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/herbs_vegetables_cay-rau.jsonl --resume
 ```
 
 **Book: Cây thuốc, vị thuốc phòng và chữa bệnh nội tiết (syndromes / PHẦN THỨ HAI)**
@@ -98,7 +98,7 @@ py main.py ingest --input data/raw/cay-rau-lam-thuoc/cay-rau-lam-thuoc.md --sche
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md --schema EndocrineSyndrome --chunk-by book --index-type endocrine_syndromes --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/endocrine_syndromes_noi-tiet.jsonl --resume
+py main.py ingest --input ../data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md --schema EndocrineSyndrome --chunk-by book --index-type endocrine_syndromes --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/endocrine_syndromes_noi-tiet.jsonl --resume
 ```
 
 **Book: Cây thuốc, vị thuốc phòng và chữa bệnh nội tiết (plants / PHẦN THỨ BA)**
@@ -108,7 +108,7 @@ py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/c
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md --schema MedicinalPlant --chunk-by book --index-type endocrine_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/endocrine_plants_noi-tiet.jsonl --resume
+py main.py ingest --input ../data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md --schema MedicinalPlant --chunk-by book --index-type endocrine_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/endocrine_plants_noi-tiet.jsonl --resume
 ```
 
 **Book: Cấp cứu & chống độc**
@@ -118,7 +118,7 @@ py main.py ingest --input data/raw/cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet/c
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py ingest --input data/raw/cc_va_chong_doc_258/cc_va_chong_doc_258.md --schema EmergencyProtocol --chunk-by book --index-type emergency --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir data/processed/images --jsonl-out data/processed/emergency_cc.jsonl --resume
+py main.py ingest --input ../data/raw/cc_va_chong_doc_258/cc_va_chong_doc_258.md --schema EmergencyProtocol --chunk-by book --index-type emergency --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/emergency_cc.jsonl --resume
 ```
 
 ## 2) Combine JSONL by `index_type`
@@ -128,24 +128,24 @@ Only combine JSONLs that belong to the same target `--index-type`.
 Example: combine all `herbs` JSONLs into one:
 
 ```powershell
-Get-Content data/processed/herbs_plants_*.jsonl | Set-Content data/processed/herbs_plants_all.jsonl
-Get-Content data/processed/herbs_vegetables_*.jsonl | Set-Content data/processed/herbs_vegetables_all.jsonl
-Get-Content data/processed/remedies_*.jsonl | Set-Content data/processed/remedies_all.jsonl
-Get-Content data/processed/endocrine_syndromes_*.jsonl | Set-Content data/processed/endocrine_syndromes_all.jsonl
-Get-Content data/processed/endocrine_plants_*.jsonl | Set-Content data/processed/endocrine_plants_all.jsonl
-Get-Content data/processed/emergency_*.jsonl | Set-Content data/processed/emergency_all.jsonl
+Get-Content ../data/processed/herbs_plants_*.jsonl | Set-Content ../data/processed/herbs_plants_all.jsonl
+Get-Content ../data/processed/herbs_vegetables_*.jsonl | Set-Content ../data/processed/herbs_vegetables_all.jsonl
+Get-Content ../data/processed/remedies_*.jsonl | Set-Content ../data/processed/remedies_all.jsonl
+Get-Content ../data/processed/endocrine_syndromes_*.jsonl | Set-Content ../data/processed/endocrine_syndromes_all.jsonl
+Get-Content ../data/processed/endocrine_plants_*.jsonl | Set-Content ../data/processed/endocrine_plants_all.jsonl
+Get-Content ../data/processed/emergency_*.jsonl | Set-Content ../data/processed/emergency_all.jsonl
 ```
 
 Example: combine all `diseases` JSONLs:
 
 ```powershell
-Get-Content data/processed/diseases_*.jsonl | Set-Content data/processed/diseases_all.jsonl
+Get-Content ../data/processed/diseases_*.jsonl | Set-Content ../data/processed/diseases_all.jsonl
 ```
 
 Example: combine all `emergency` JSONLs:
 
 ```powershell
-Get-Content data/processed/emergency_*.jsonl | Set-Content data/processed/emergency_all.jsonl
+Get-Content ../data/processed/emergency_*.jsonl | Set-Content ../data/processed/emergency_all.jsonl
 ```
 
 ## 3) Embed + ingest JSONL to the vector database
@@ -158,12 +158,12 @@ With `--persist-dir vector_data`, the on-disk layout is:
 - `vector_data/emergency/` (SQLite + sharded embeddings)
 
 ```powershell
-py main.py ingest --schema MedicinalPlant --index-type herbs_plants --jsonl-out data/processed/herbs_plants_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema MedicinalVegetable --index-type herbs_vegetables --jsonl-out data/processed/herbs_vegetables_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema RemedyRecipe --index-type remedies --jsonl-out data/processed/remedies_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema EndocrineSyndrome --index-type endocrine_syndromes --jsonl-out data/processed/endocrine_syndromes_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema MedicinalPlant --index-type endocrine_plants --jsonl-out data/processed/endocrine_plants_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema EmergencyProtocol --index-type emergency --jsonl-out data/processed/emergency_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema MedicinalPlant --index-type herbs_plants --jsonl-out ../data/processed/herbs_plants_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema MedicinalVegetable --index-type herbs_vegetables --jsonl-out ../data/processed/herbs_vegetables_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema RemedyRecipe --index-type remedies --jsonl-out ../data/processed/remedies_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema EndocrineSyndrome --index-type endocrine_syndromes --jsonl-out ../data/processed/endocrine_syndromes_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema MedicinalPlant --index-type endocrine_plants --jsonl-out ../data/processed/endocrine_plants_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema EmergencyProtocol --index-type emergency --jsonl-out ../data/processed/emergency_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
 ```
 
 ## 4) Use the router / chatbot core engine
@@ -186,14 +186,14 @@ The helper script [scripts/extract_test.py](scripts/extract_test.py) samples mar
 Basic (mock extractor — no GROQ key required):
 
 ```powershell
-py scripts\extract_test.py --input data/raw/cay-canh--cay-thuoc-trong-nha-truong --schema MedicinalPlant --sample 5 --out data/processed/test_extracted.jsonl
+py scripts\extract_test.py --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong --schema MedicinalPlant --sample 5 --out ../data/processed/test_extracted.jsonl
 ```
 
 Use the real Groq extractor (requires `GROQ_API_KEY` in env or pass `--groq-key`):
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py scripts\extract_test.py --input data/raw/cay-canh--cay-thuoc-trong-nha-truong --schema MedicinalPlant --sample 5 --use-llm --rpm 2 --out data/processed/test_extracted.jsonl --enrich-images --image-store-dir data/processed/images
+py scripts\extract_test.py --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong --schema MedicinalPlant --sample 5 --use-llm --rpm 2 --out ../data/processed/test_extracted.jsonl --enrich-images --image-store-dir ../data/processed/images
 ```
 
 Common options:
@@ -202,7 +202,7 @@ Common options:
 - `--sample`: Number of chunks to sample (default 10).
 - `--use-llm`: Use the real Groq extractor (requires API key).
 - `--groq-key`: Pass a Groq key on the command line (overrides env).
-- `--out`: Output JSONL path (default `data/processed/test_extracted.jsonl`).
+- `--out`: Output JSONL path (default `../data/processed/test_extracted.jsonl`).
 - `--enrich-images`: Attach and store image metadata; use with `--image-store-dir`.
 
 The script prints a short validation summary and a few sample records after writing the output file.

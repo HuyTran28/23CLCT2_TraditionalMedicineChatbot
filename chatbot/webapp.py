@@ -79,7 +79,7 @@ def _is_botanical_features_question(question: str) -> bool:
 
 
 def _workspace_root() -> Path:
-    # webapp.py lives in the workspace root folder.
+    # webapp.py lives in the chatbot/ folder.
     return Path(__file__).resolve().parent
 
 

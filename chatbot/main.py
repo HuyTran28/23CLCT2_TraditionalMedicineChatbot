@@ -22,7 +22,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd")
 
     ingest = sub.add_parser("ingest", help="Extract (optional) and ingest into persistent Chroma")
-    ingest.add_argument("--input", default="data/raw", help="Markdown file or folder")
+    ingest.add_argument("--input", default="../data/raw", help="Markdown file or folder")
     ingest.add_argument("--schema", default="MedicinalPlant", help="Pydantic schema name")
     ingest.add_argument("--chunk-by", default="book", choices=["book", "section", "paragraph"], help="Chunking mode")
     ingest.add_argument(
@@ -41,7 +41,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Vector index bucket",
     )
     ingest.add_argument("--persist-dir", default="./chroma_data", help="Chroma persistence directory")
-    ingest.add_argument("--jsonl-out", default="data/processed/extracted.jsonl", help="Extraction cache JSONL")
+    ingest.add_argument("--jsonl-out", default="../data/processed/extracted.jsonl", help="Extraction cache JSONL")
     ingest.add_argument("--embed-model", default="intfloat/multilingual-e5-small", help="HF embedding model")
     ingest.add_argument("--embed-batch", type=int, default=8, help="Embedding batch size (lower uses less RAM)")
     ingest.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Embedding device. Use cpu to avoid GPU VRAM.")
@@ -81,7 +81,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # Optional enrichment: store images (rendering + provenance)
     ingest.add_argument("--enrich-images", action="store_true", help="Attach image metadata (paths + hashes) to extracted records")
-    ingest.add_argument("--image-store-dir", default="data/processed/images", help="Where to store optimized images (e.g., webp)")
+    ingest.add_argument("--image-store-dir", default="../data/processed/images", help="Where to store optimized images (e.g., webp)")
     ingest.add_argument("--image-format", default="webp", choices=["webp", "png", "jpg"], help="Output format for stored images")
     ingest.add_argument("--image-quality", type=int, default=80, help="Quality for webp/jpg output (1-100)")
 
