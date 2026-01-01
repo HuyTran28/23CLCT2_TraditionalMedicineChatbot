@@ -1,0 +1,8 @@
+﻿pydantic==2.12.5
+llama-index
+llama-index-llms-groq
+llama-index-embeddings-huggingface
+python-dotenv
+pillow>=10.0.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
