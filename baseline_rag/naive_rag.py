@@ -1,5 +1,10 @@
 import os
 import shutil
+from pathlib import Path
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
 from llama_index.core import (
     VectorStoreIndex, 
     SimpleDirectoryReader, 
@@ -19,9 +24,24 @@ class NaiveMedicalRAG:
         - Chunking: Hierarchical/Structural (MarkdownNodeParser)
         """
         self.persist_dir = persist_dir
-        
+        # Try to locate and load a .env file upward from this module's directory
+        def _find_dotenv(start: Path) -> str | None:
+            cur = start
+            while True:
+                candidate = cur / ".env"
+                if candidate.exists():
+                    return str(candidate)
+                if cur.parent == cur:
+                    return None
+                cur = cur.parent
+
+        if load_dotenv is not None:
+            env_path = _find_dotenv(Path(__file__).resolve().parent)
+            if env_path:
+                load_dotenv(env_path)
+        # Ensure required env var exists
         if not os.environ.get("GROQ_API_KEY"):
-             raise ValueError("Chưa thiết lập biến môi trường GROQ_API_KEY")
+            raise ValueError("Chưa thiết lập biến môi trường GROQ_API_KEY")
 
         # --- CẤU HÌNH CHO CPU ---
         print("--- Đang load model BAAI/bge-m3 (CPU Mode)... ---")
