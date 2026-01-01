@@ -135,6 +135,11 @@ def run(args):
 
 
 def build_parser():
+    # Robust default paths relative to this script (chatbot/scripts/extract_test.py)
+    _root = Path(__file__).resolve().parent.parent.parent
+    _default_out = _root / "data" / "processed" / "test_extracted.jsonl"
+    _default_images = _root / "data" / "processed" / "images"
+
     p = argparse.ArgumentParser()
     p.add_argument('--input', required=True, help='Markdown file or folder')
     p.add_argument('--schema', required=True, help='Pydantic schema name (e.g., MedicinalPlant)')
@@ -142,11 +147,11 @@ def build_parser():
     p.add_argument('--use-llm', action='store_true', help='Use real Groq extractor (requires GROQ_API_KEY)')
     p.add_argument('--groq-key', default=None, help='Optional Groq key to pass (overrides env)')
     p.add_argument('--rpm', type=float, default=2.0, help='Rate limit (requests per minute)')
-    p.add_argument('--out', default='../data/processed/test_extracted.jsonl', help='Output JSONL')
+    p.add_argument('--out', default=str(_default_out), help='Output JSONL')
     p.add_argument('--context', default='', help='Context hint for the extractor')
 
     p.add_argument('--enrich-images', action='store_true', help='Attach image metadata to each record (when supported by schema)')
-    p.add_argument('--image-store-dir', default='../data/processed/images', help='Where to store optimized images (webp/png/jpg)')
+    p.add_argument('--image-store-dir', default=str(_default_images), help='Where to store optimized images (webp/png/jpg)')
     p.add_argument('--image-format', default='webp', choices=['webp', 'png', 'jpg'], help='Output format for stored images')
     p.add_argument('--image-quality', type=int, default=80, help='Quality for webp/jpg output (1-100)')
     return p

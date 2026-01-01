@@ -136,6 +136,9 @@ def iter_chunks_from_file(
         )
 
 
+# Robust default for image storage relative to this module
+_DEFAULT_IMAGE_STORE = str(Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "images")
+
 def extract_chunks_to_jsonl(
     *,
     extractor: MedicalDataExtractor,
@@ -144,7 +147,7 @@ def extract_chunks_to_jsonl(
     out_jsonl_path: str,
     requests_per_minute: Optional[float] = 30.0,
     enrich_images: bool = False,
-    image_store_dir: str = "../data/processed/images",
+    image_store_dir: str = _DEFAULT_IMAGE_STORE,
     image_prefer_format: str = "webp",
     image_quality: int = 80,
     resume: bool = False,

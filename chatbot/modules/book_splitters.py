@@ -2,7 +2,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
-
+from pathlib import Path
 
 def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
@@ -687,13 +687,20 @@ def split_by_book(filepath: str, text: str, split_kind: Optional[str] = None) ->
 # EXAMPLE USAGE
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    example_path = "../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md"
+    # Robust path resolution: find 'data' relative to this file's location
+    _this_dir = Path(__file__).resolve().parent
+    # book_splitters.py is in chatbot/modules/, so data is at ../../data
+    example_path = _this_dir.parent.parent / "data" / "raw" / "cc_va_chong_doc_258" / "cc_va_chong_doc_258.md"
+    
     split_kind = "recipes"
-    with open(example_path, "r", encoding="utf-8") as f:
-        content = f.read()
+    if not example_path.exists():
+        print(f"Error: Example file not found at {example_path}")
+    else:
+        with open(example_path, "r", encoding="utf-8") as f:
+            content = f.read()
 
-    chunks = split_by_book(example_path, content, split_kind=split_kind)
-    for i, chunk in enumerate(chunks):
-        print(f"--- Chunk {i + 1} ---")
-        print(chunk[:500])
-        print()
+        chunks = split_by_book(str(example_path), content, split_kind=split_kind)
+        for i, chunk in enumerate(chunks):
+            print(f"--- Chunk {i + 1} ---")
+            print(chunk[:500])
+            print()

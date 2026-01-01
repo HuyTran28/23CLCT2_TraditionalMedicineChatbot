@@ -4,13 +4,15 @@ from pydantic import BaseModel
 from modules.image_assets import resolve_image_path, store_image_efficiently
 from modules.markdown_images import iter_image_refs_from_markdown
 
+# Robust default for image storage relative to this module
+_DEFAULT_STORE = str(Path(__file__).resolve().parent.parent.parent / "data" / "processed" / "images")
 
 def enrich_record_with_images(
     *,
     record: BaseModel,
     chunk_text: str,
     source_markdown_path: str,
-    store_dir: str = "../data/processed/images",
+    store_dir: str = _DEFAULT_STORE,
     prefer_format: str = "webp",
     quality: int = 80,
 ) -> BaseModel:

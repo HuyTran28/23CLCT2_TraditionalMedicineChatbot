@@ -18,11 +18,17 @@ def _get_schema_by_name(name: str):
     return getattr(medical_schemas, name)
 
 def build_arg_parser() -> argparse.ArgumentParser:
+    # Robust default paths relative to this script (chatbot/main.py)
+    _root = Path(__file__).resolve().parent.parent
+    _default_input = _root / "data" / "raw"
+    _default_jsonl = _root / "data" / "processed" / "extracted.jsonl"
+    _default_images = _root / "data" / "processed" / "images"
+
     p = argparse.ArgumentParser(description="Traditional medicine chatbot pipeline")
     sub = p.add_subparsers(dest="cmd")
 
     ingest = sub.add_parser("ingest", help="Extract (optional) and ingest into persistent Chroma")
-    ingest.add_argument("--input", default="../data/raw", help="Markdown file or folder")
+    ingest.add_argument("--input", default=str(_default_input), help="Markdown file or folder")
     ingest.add_argument("--schema", default="MedicinalPlant", help="Pydantic schema name")
     ingest.add_argument("--chunk-by", default="book", choices=["book", "section", "paragraph"], help="Chunking mode")
     ingest.add_argument(
@@ -41,7 +47,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Vector index bucket",
     )
     ingest.add_argument("--persist-dir", default="./chroma_data", help="Chroma persistence directory")
-    ingest.add_argument("--jsonl-out", default="../data/processed/extracted.jsonl", help="Extraction cache JSONL")
+    ingest.add_argument("--jsonl-out", default=str(_default_jsonl), help="Extraction cache JSONL")
     ingest.add_argument("--embed-model", default="intfloat/multilingual-e5-small", help="HF embedding model")
     ingest.add_argument("--embed-batch", type=int, default=8, help="Embedding batch size (lower uses less RAM)")
     ingest.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Embedding device. Use cpu to avoid GPU VRAM.")
@@ -81,7 +87,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     # Optional enrichment: store images (rendering + provenance)
     ingest.add_argument("--enrich-images", action="store_true", help="Attach image metadata (paths + hashes) to extracted records")
-    ingest.add_argument("--image-store-dir", default="../data/processed/images", help="Where to store optimized images (e.g., webp)")
+    ingest.add_argument("--image-store-dir", default=str(_default_images), help="Where to store optimized images (e.g., webp)")
     ingest.add_argument("--image-format", default="webp", choices=["webp", "png", "jpg"], help="Output format for stored images")
     ingest.add_argument("--image-quality", type=int, default=80, help="Quality for webp/jpg output (1-100)")
 
