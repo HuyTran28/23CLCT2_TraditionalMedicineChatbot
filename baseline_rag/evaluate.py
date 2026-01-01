@@ -91,10 +91,6 @@ def main():
 
     print("\n>>> Đang chấm điểm bằng RAGAS...")
     
-    # DANH SÁCH METRIC CẬP NHẬT
-    # - context_recall: Đo khả năng tìm kiếm (giống Retrieval Recall trong bài báo)
-    # - answer_correctness: Đo độ chính xác nội dung (giống Accuracy trong bài báo)
-    # - faithfulness: Đo độ trung thực 
     metrics_list = [
         context_recall, 
         answer_correctness, 
