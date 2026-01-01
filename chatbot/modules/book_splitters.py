@@ -523,6 +523,82 @@ def split_noi_tiet_syndromes(text: str) -> List[str]:
     return _filter_min_chars(chunks, min_chars=350)
 
 
+def split_noi_tiet_patterns(text: str) -> List[str]:
+    """Split PHẦN THỨ HAI disease chapters into pattern-level chunks.
+
+    Why: disease chapters are long and contain many formulas/tables; extracting a
+    single giant JSON object often gets truncated. Pattern-level chunks are
+    smaller and map well to `EndocrinePatternRecord`.
+
+    Heuristics:
+      - Start from disease chapter chunks (same as split_noi_tiet_syndromes)
+      - Within each chapter, split on headings that look like pattern sections:
+          '#### *1. Thể ...:*', '#### *2. Chứng ...:*'
+        and also keep 'Các bài thuốc kinh nghiệm' sections.
+      - Prefix each chunk with the disease title line to preserve context.
+    """
+    chapters = split_noi_tiet_syndromes(text)
+    out: List[str] = []
+
+    # Pattern headings (allow OCR variance):
+    #   '#### *1. Thể can khí uất trệ:*'
+    #   '#### 2. Thể can hỏa thịnh:'
+    pat_header = re.compile(
+        r"^\s*#{2,6}\s*(?:\*{0,2}\s*)?(?:\(?\s*\d+\s*\)?\s*[\.)])\s*(Thể|Chứng)\b.*$",
+        re.IGNORECASE,
+    )
+    exp_header = re.compile(r"^\s*#{1,6}\s*.*bài\s+thuốc\s+kinh\s+nghiệm.*$", re.IGNORECASE)
+
+    disease_header = re.compile(
+        r"^\s*#{1,3}\s*(?:\*{1,2}\s*)?(?P<num>\d{1,3})\s*[\.)]\s+(?P<title>.+?)\s*$",
+        re.IGNORECASE,
+    )
+
+    for chapter in chapters:
+        lines = _normalize_newlines(chapter).split("\n")
+        if not lines:
+            continue
+
+        # Find disease title line (best-effort).
+        title_line = None
+        for ln in lines[: min(60, len(lines))]:
+            m = disease_header.match(ln)
+            if m:
+                title_line = ln.strip()
+                break
+        if title_line is None:
+            # Fallback: first non-empty line.
+            for ln in lines:
+                if ln.strip():
+                    title_line = ln.strip()
+                    break
+        title_line = title_line or ""
+
+        starts: List[int] = []
+        for i, ln in enumerate(lines):
+            if pat_header.match(ln) or exp_header.match(ln):
+                starts.append(i)
+
+        # If no internal pattern headers, keep the whole chapter as one chunk.
+        if not starts:
+            out.append(chapter)
+            continue
+
+        # Build chunks from starts. Prefix each with disease title.
+        starts_sorted = sorted(set(starts))
+        for j, start in enumerate(starts_sorted):
+            end = starts_sorted[j + 1] if j + 1 < len(starts_sorted) else len(lines)
+            chunk_lines = _strip_empty_edges(lines[start:end])
+            if not chunk_lines:
+                continue
+            if title_line:
+                chunk_lines = [title_line, "", *chunk_lines]
+            out.append("\n".join(chunk_lines).strip())
+
+    # Pattern sections can be shorter than full chapters.
+    return _filter_min_chars(out, min_chars=220)
+
+
 def split_noi_tiet_plants(text: str) -> List[str]:
     """Split PHẦN THỨ BA (cây thuốc / vị thuốc) into one-plant chunks."""
     text = _normalize_newlines(text)
@@ -672,6 +748,8 @@ def split_by_book(filepath: str, text: str, split_kind: Optional[str] = None) ->
     if "noi-tiet" in norm_path:
         if split_kind and split_kind.lower() == "plants":
             return split_noi_tiet_plants(text)
+        if split_kind and split_kind.lower() == "patterns":
+            return split_noi_tiet_patterns(text)
         if split_kind and split_kind.lower() == "syndromes":
             return split_noi_tiet_syndromes(text)
         return split_noi_tiet(text)

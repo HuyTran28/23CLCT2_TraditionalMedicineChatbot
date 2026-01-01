@@ -376,9 +376,243 @@ class EndocrineSyndrome(BaseModel):
     )
 class EndocrineDocumentContent(BaseModel):
     """Root wrapper for endocrine medicine documents."""
+    # NOTE: This endocrine source is chunked by *disease chapter* (PHẦN THỨ HAI)
+    # and by *plant monographs* (PHẦN THỨ BA). The legacy `EndocrineSyndrome`
+    # schema (4 strings) is often too narrow for disease chapters that contain
+    # multiple patterns + many formulas/tables.
+
+
+class EndocrineFormulaIngredient(BaseModel):
+    """One ingredient row, usually from a markdown table."""
+
+    name: str = Field(..., description="Tên vị thuốc/nguyên liệu")
+    amount: Optional[str] = Field(default=None, description="Định lượng (ví dụ: '12g', '3 lát')")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {"name": "", "amount": None}
+        if isinstance(data, str):
+            s = data.strip()
+            return {"name": s, "amount": None}
+        if not isinstance(data, dict):
+            return {"name": str(data), "amount": None}
+        d = dict(data)
+        # Accept common alternative keys from LLM outputs.
+        if "name" not in d:
+            d["name"] = d.get("ingredient") or d.get("herb") or d.get("drug") or ""
+        if "amount" not in d:
+            d["amount"] = d.get("dose") or d.get("quantity")
+        return d
+
+
+class EndocrineFormula(BaseModel):
+    """A named formula/bài thuốc (may include an ingredients table)."""
+
+    formula_name: str = Field(..., description="Tên bài thuốc")
+    ingredients: List[EndocrineFormulaIngredient] = Field(
+        default_factory=list,
+        description="Danh sách vị thuốc/nguyên liệu kèm định lượng (nếu có)",
+    )
+    preparation: Optional[str] = Field(default=None, description="Cách sắc/chế")
+    usage_instructions: Optional[str] = Field(default=None, description="Cách dùng/liều dùng")
+    notes: Optional[str] = Field(default=None, description="Ghi chú/gia giảm")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {"formula_name": "", "ingredients": []}
+        if isinstance(data, str):
+            s = data.strip()
+            return {"formula_name": s, "ingredients": []}
+        if not isinstance(data, dict):
+            return {"formula_name": str(data), "ingredients": []}
+        d = dict(data)
+
+        # Name aliases.
+        if "formula_name" not in d:
+            d["formula_name"] = d.get("name") or d.get("prescribed_remedy") or d.get("remedy") or ""
+
+        # Ingredients can arrive as string/table; keep as best-effort structured list.
+        ing = d.get("ingredients")
+        if ing is None:
+            d["ingredients"] = []
+        elif isinstance(ing, str):
+            s = ing.strip()
+            d["ingredients"] = [{"name": s, "amount": None}] if s else []
+        elif isinstance(ing, dict):
+            d["ingredients"] = [ing]
+
+        # Optional field aliases.
+        if "usage_instructions" not in d and d.get("usage") is not None:
+            d["usage_instructions"] = d.get("usage")
+
+        return d
+
+
+class EndocrineTreatmentPattern(BaseModel):
+    """One pattern/thể bệnh inside a disease chapter."""
+
+    pattern_name: str = Field(..., description="Tên thể bệnh")
+    symptoms: Optional[str] = Field(default=None, description="Triệu chứng")
+    treatment_principle: Optional[str] = Field(default=None, description="Pháp điều trị")
+    formulas: List[EndocrineFormula] = Field(default_factory=list, description="Các bài thuốc áp dụng")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {"pattern_name": "", "formulas": []}
+        if isinstance(data, str):
+            s = data.strip()
+            return {"pattern_name": s, "formulas": []}
+        if not isinstance(data, dict):
+            return {"pattern_name": str(data), "formulas": []}
+        d = dict(data)
+        if "pattern_name" not in d:
+            d["pattern_name"] = d.get("syndrome_name") or d.get("name") or d.get("pattern") or ""
+
+        # Coerce formulas
+        f = d.get("formulas")
+        if f is None:
+            d["formulas"] = []
+        elif isinstance(f, dict):
+            d["formulas"] = [f]
+        elif isinstance(f, str):
+            s = f.strip()
+            d["formulas"] = ([{"formula_name": s, "ingredients": []}] if s else [])
+
+        return d
+
+
+class EndocrinePatternRecord(BaseModel):
+    """Pattern-level record suitable for chunk-level extraction.
+
+    Use this when the source chunk is one 'Thể ...' / 'Chứng ...' section inside a disease chapter.
+    This keeps outputs small (less truncation) while preserving formula tables.
+    """
+
+    disease_name: str = Field(..., description="Tên bệnh (chương bệnh) mà thể này thuộc về")
+    pattern_name: str = Field(..., description="Tên thể bệnh")
+    symptoms: Optional[str] = Field(default=None, description="Triệu chứng")
+    treatment_principle: Optional[str] = Field(default=None, description="Pháp điều trị")
+    formulas: List[EndocrineFormula] = Field(default_factory=list, description="Các bài thuốc liên quan")
+
+    notes: Optional[str] = Field(default=None, description="Ghi chú khác trong mục (nếu có)")
+    images: List[ImageAsset] = Field(default_factory=list, description="Ảnh liên quan trong chunk (nếu có)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {"disease_name": "", "pattern_name": "", "formulas": [], "images": []}
+        if isinstance(data, str):
+            s = data.strip()
+            return {"disease_name": "", "pattern_name": s, "formulas": [], "images": []}
+        if not isinstance(data, dict):
+            return {"disease_name": "", "pattern_name": str(data), "formulas": [], "images": []}
+        d = dict(data)
+        if "disease_name" not in d:
+            d["disease_name"] = d.get("disease") or d.get("condition") or d.get("chapter") or ""
+        if "pattern_name" not in d:
+            d["pattern_name"] = d.get("syndrome_name") or d.get("pattern") or d.get("name") or ""
+
+        # Coerce formulas/images lists
+        for key in ("formulas", "images"):
+            v = d.get(key)
+            if v is None:
+                d[key] = []
+            elif isinstance(v, dict):
+                d[key] = [v]
+            elif isinstance(v, str) and key == "formulas":
+                s = v.strip()
+                d[key] = ([{"formula_name": s, "ingredients": []}] if s else [])
+
+        return d
+
+
+class EndocrineDisease(BaseModel):
+    """A full disease chapter chunk (PHẦN THỨ HAI) from the endocrine source."""
+
+    disease_name: str = Field(..., description="Tên bệnh")
+    overview: Optional[str] = Field(default=None, description="Khái quát/định nghĩa")
+    classification: List[str] = Field(default_factory=list, description="Phân loại (nếu có)")
+    clinical_signs: Optional[str] = Field(default=None, description="Triệu chứng lâm sàng")
+    diagnosis: Optional[str] = Field(default=None, description="Chẩn đoán (nếu có)")
+    western_medicine_notes: Optional[str] = Field(default=None, description="Góc nhìn theo y học hiện đại (nếu có)")
+    tcm_view: Optional[str] = Field(default=None, description="Theo y học cổ truyền/bệnh lý (nếu có)")
+
+    patterns: List[EndocrineTreatmentPattern] = Field(
+        default_factory=list,
+        description="Các thể bệnh/biện chứng và điều trị trong chương (nếu có)",
+    )
+    experience_formulas: List[EndocrineFormula] = Field(
+        default_factory=list,
+        description="Các bài thuốc kinh nghiệm (nếu có)",
+    )
+
+    warnings: Optional[str] = Field(default=None, description="Cảnh báo/chống chỉ định (nếu có)")
+    images: List[ImageAsset] = Field(default_factory=list, description="Ảnh liên quan trong chunk (nếu có)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {
+                "disease_name": "",
+                "classification": [],
+                "patterns": [],
+                "experience_formulas": [],
+                "images": [],
+            }
+        if isinstance(data, str):
+            s = data.strip()
+            return {
+                "disease_name": s,
+                "classification": [],
+                "patterns": [],
+                "experience_formulas": [],
+                "images": [],
+            }
+        if not isinstance(data, dict):
+            return {
+                "disease_name": str(data),
+                "classification": [],
+                "patterns": [],
+                "experience_formulas": [],
+                "images": [],
+            }
+
+        d = dict(data)
+
+        if "disease_name" not in d:
+            d["disease_name"] = d.get("disease") or d.get("condition_name") or d.get("title") or ""
+
+        # Normalize list-ish fields
+        for key in ("classification", "patterns", "experience_formulas", "images"):
+            v = d.get(key)
+            if v is None:
+                d[key] = []
+            elif isinstance(v, dict):
+                d[key] = [v]
+            elif isinstance(v, str) and key == "classification":
+                s = v.strip()
+                d[key] = [s] if s else []
+
+        return d
+
+
+class EndocrineDocumentContent(BaseModel):
+    """Root wrapper for endocrine medicine documents."""
     syndromes: List[EndocrineSyndrome] = Field(
         default_factory=list,
         description="Danh sách thể bệnh và điều trị"
+    )
+    diseases: List[EndocrineDisease] = Field(
+        default_factory=list,
+        description="Danh sách chương bệnh (PHẦN THỨ HAI) (khuyến nghị dùng thay cho syndromes)"
     )
     medicinal_plants: List[MedicinalPlant] = Field(
         default_factory=list,

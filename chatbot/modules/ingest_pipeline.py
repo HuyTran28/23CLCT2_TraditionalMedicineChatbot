@@ -118,7 +118,9 @@ def iter_chunks_from_file(
             split_kind = "recipes"
         elif schema_name == "MedicinalPlant":
             split_kind = "plants"
-        elif schema_name == "EndocrineSyndrome":
+        elif schema_name == "EndocrinePatternRecord":
+            split_kind = "patterns"
+        elif schema_name in {"EndocrineSyndrome", "EndocrineDisease"}:
             split_kind = "syndromes"
         chunks = split_by_book(str(filepath), content, split_kind=split_kind)
     elif chunk_by == "section":
@@ -450,15 +452,108 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
         ).strip()
 
     if index_type in {"endocrine_syndromes", "diseases"}:
-        syn = data.get("syndrome_name") or data.get("disease") or ""
-        symptoms = data.get("symptoms") or ""
-        principle = data.get("treatment_principle") or ""
+        # Supports both legacy EndocrineSyndrome and newer EndocrineDisease.
+        name = (
+            data.get("disease_name")
+            or data.get("syndrome_name")
+            or data.get("disease")
+            or ""
+        )
+
+        # Pattern-level record support (EndocrinePatternRecord)
+        pattern_name = data.get("pattern_name") or ""
+        if pattern_name:
+            symptoms = data.get("symptoms") or ""
+            principle = data.get("treatment_principle") or ""
+            formulas = data.get("formulas") or []
+            fnames: list[str] = []
+            if isinstance(formulas, list):
+                for f in formulas:
+                    if isinstance(f, dict):
+                        nm = f.get("formula_name") or f.get("name") or ""
+                        if nm:
+                            fnames.append(str(nm))
+                    elif isinstance(f, str) and f.strip():
+                        fnames.append(f.strip())
+            return (
+                f"Endocrine disease: {name}\n"
+                f"Pattern: {pattern_name}\n"
+                + (f"Symptoms: {symptoms}\n" if symptoms else "")
+                + (f"Treatment principle: {principle}\n" if principle else "")
+                + (f"Formulas: {', '.join(fnames)}\n" if fnames else "")
+            ).strip()
+
+        overview = data.get("overview") or ""
+        clinical = data.get("clinical_signs") or data.get("symptoms") or ""
+        diagnosis = data.get("diagnosis") or ""
+        tcm = data.get("tcm_view") or ""
+
+        classification = data.get("classification") or []
+        if isinstance(classification, str):
+            classification_s = classification
+        elif isinstance(classification, list):
+            classification_s = ", ".join(str(x) for x in classification if str(x).strip())
+        else:
+            classification_s = ""
+
+        # Patterns -> short bullet-like lines
+        patterns = data.get("patterns") or []
+        pattern_lines: list[str] = []
+        if isinstance(patterns, list):
+            for p in patterns:
+                if not isinstance(p, dict):
+                    continue
+                pn = p.get("pattern_name") or p.get("syndrome_name") or ""
+                pp = p.get("treatment_principle") or ""
+                ps = p.get("symptoms") or ""
+                formulas = p.get("formulas") or []
+                fnames: list[str] = []
+                if isinstance(formulas, list):
+                    for f in formulas:
+                        if isinstance(f, dict):
+                            nm = f.get("formula_name") or f.get("name") or ""
+                            if nm:
+                                fnames.append(str(nm))
+                        elif isinstance(f, str) and f.strip():
+                            fnames.append(f.strip())
+
+                bits = []
+                if pn:
+                    bits.append(f"Pattern: {pn}")
+                if pp:
+                    bits.append(f"Principle: {pp}")
+                if ps:
+                    bits.append(f"Symptoms: {ps}")
+                if fnames:
+                    bits.append(f"Formulas: {', '.join(fnames)}")
+                if bits:
+                    pattern_lines.append(" - " + " | ".join(bits))
+
+        exp = data.get("experience_formulas") or []
+        exp_names: list[str] = []
+        if isinstance(exp, list):
+            for f in exp:
+                if isinstance(f, dict):
+                    nm = f.get("formula_name") or f.get("name") or ""
+                    if nm:
+                        exp_names.append(str(nm))
+                elif isinstance(f, str) and f.strip():
+                    exp_names.append(f.strip())
+
         prescribed = data.get("prescribed_remedy") or ""
+        principle = data.get("treatment_principle") or ""
+
         return (
-            f"Syndrome: {syn}\n"
-            f"Symptoms: {symptoms}\n"
-            f"Treatment principle: {principle}\n"
-            f"Prescribed remedy: {prescribed}\n"
+            f"Endocrine topic: {name}\n"
+            + (f"Overview: {overview}\n" if overview else "")
+            + (f"Classification: {classification_s}\n" if classification_s else "")
+            + (f"Clinical signs: {clinical}\n" if clinical else "")
+            + (f"Diagnosis: {diagnosis}\n" if diagnosis else "")
+            + (f"TCM view: {tcm}\n" if tcm else "")
+            + (f"Treatment principle: {principle}\n" if principle else "")
+            + (f"Prescribed remedy: {prescribed}\n" if prescribed else "")
+            + ("Patterns:\n" + "\n".join(pattern_lines) + "\n" if pattern_lines else "")
+            + (f"Experience formulas: {', '.join(exp_names)}\n" if exp_names else "")
         ).strip()
 
     if index_type == "endocrine_plants":

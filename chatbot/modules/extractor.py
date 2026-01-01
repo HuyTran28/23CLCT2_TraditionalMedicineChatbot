@@ -4,7 +4,7 @@ import re
 import time
 import random
 from typing import Type, TypeVar, List, Optional, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 import logging
 from dotenv import load_dotenv
 
@@ -278,6 +278,24 @@ Schema JSON:
                 if json_attempt >= self.retry_count:
                     raise ValueError(f"Failed to extract after {self.retry_count} JSON attempts") from e
                 continue
+
+            except ValidationError as e:
+                # LlamaIndex often wraps JSON parse failures as Pydantic validation errors
+                # with type 'json_invalid' when the model outputs truncated/invalid JSON.
+                err_types = {str(err.get("type") or "") for err in (e.errors() or []) if isinstance(err, dict)}
+                looks_like_json = any(
+                    t in {"json_invalid", "json_decode", "value_error.jsondecode"} for t in err_types
+                ) or ("Invalid JSON" in str(e))
+
+                if looks_like_json:
+                    json_attempt += 1
+                    logger.warning(f"✗ JSON parsing failed (attempt {json_attempt}): {str(e)[:160]}")
+                    if json_attempt >= self.retry_count:
+                        raise ValueError(
+                            f"Failed to extract after {self.retry_count} JSON attempts"
+                        ) from e
+                    continue
+                raise
             
             except Exception as e:
                 if _is_rate_limit_error(e):
@@ -393,7 +411,9 @@ Schema JSON:
                 split_kind = "recipes"
             elif schema_name == "MedicinalPlant":
                 split_kind = "plants"
-            elif schema_name == "EndocrineSyndrome":
+            elif schema_name == "EndocrinePatternRecord":
+                split_kind = "patterns"
+            elif schema_name in {"EndocrineSyndrome", "EndocrineDisease"}:
                 split_kind = "syndromes"
 
             chunks = split_by_book(filepath, content, split_kind=split_kind)

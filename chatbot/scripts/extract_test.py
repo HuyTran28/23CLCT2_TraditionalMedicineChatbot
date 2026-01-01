@@ -39,7 +39,9 @@ def load_chunks_from_path(path: Path, schema_name: str, sample: int, chunk_by: s
         split_kind = None
         if schema_name == "MedicinalPlant":
             split_kind = "plants"
-        elif schema_name == "EndocrineSyndrome":
+        elif schema_name == "EndocrinePatternRecord":
+            split_kind = "patterns"
+        elif schema_name in {"EndocrineSyndrome", "EndocrineDisease"}:
             split_kind = "syndromes"
         chunks_ext = split_by_book(str(fp), content, split_kind=split_kind)
         for i, ch in enumerate(chunks_ext):
