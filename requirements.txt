@@ -6,3 +6,23 @@ python-dotenv
 pillow>=10.0.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
+
+llama-index-readers-file
+transformers>=4.56.1
+torch==2.6.0
+
+# Packages required by baseline_rag/evaluate.py
+datasets
+ragas
+langchain
+langchain-groq
+langchain-community
+
+# Pins to avoid conflicts with other installed packages
+openai>=1.65.2,<2.0.0
+ipython==8.12.3
+tenacity>=8.1.0,<9.0.0
+llama-index-core
+huggingface-hub
+pandas
+groq
