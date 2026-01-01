@@ -4,6 +4,174 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 
+def _get_int_env(name: str, default: int) -> int:
+    try:
+        v = int(str(os.getenv(name, str(default))).strip())
+        return v
+    except Exception:
+        return default
+
+
+def _tail_overlap(text: str, overlap_chars: int) -> str:
+    if overlap_chars <= 0:
+        return ""
+    if len(text) <= overlap_chars:
+        return text.strip()
+
+    start = len(text) - overlap_chars
+    # Try to avoid cutting in the middle of a line by snapping to the next newline.
+    nl = text.find("\n", start)
+    if nl != -1 and (len(text) - nl) <= int(overlap_chars * 1.2):
+        start = nl
+    return text[start:].strip()
+
+
+def _window_split(text: str, *, max_chars: int, overlap_chars: int) -> List[str]:
+    """Split one very long string into windows with overlap."""
+    text = text.strip()
+    if not text:
+        return []
+    if max_chars <= 0 or len(text) <= max_chars:
+        return [text]
+
+    out: List[str] = []
+    step = max(1, max_chars - max(0, overlap_chars))
+    i = 0
+    while i < len(text):
+        out.append(text[i : i + max_chars].strip())
+        if i + max_chars >= len(text):
+            break
+        i += step
+    return [c for c in out if c]
+
+
+def _extract_prefix_lines(text: str, *, max_lines: int = 3, max_chars: int = 280) -> tuple[str, str]:
+    """Extract a short header/prefix from the start to repeat across sub-chunks.
+
+    Returns (prefix, body).
+    """
+    text = _normalize_newlines(text).strip()
+    if not text:
+        return "", ""
+
+    lines = text.split("\n")
+    prefix_lines: List[str] = []
+    prefix_len = 0
+    consumed = 0
+    for ln in lines:
+        consumed += 1
+        if not ln.strip():
+            if prefix_lines:
+                break
+            continue
+        prefix_lines.append(ln.rstrip())
+        prefix_len += len(ln)
+        if len(prefix_lines) >= max_lines or prefix_len >= max_chars:
+            break
+
+    prefix = "\n".join(prefix_lines).strip()
+    body_lines = lines[consumed:]
+    # Drop leading blank lines in body.
+    while body_lines and not body_lines[0].strip():
+        body_lines.pop(0)
+    body = "\n".join(body_lines).strip()
+    return prefix, body
+
+
+def _split_into_max_chars(text: str, *, max_chars: int, overlap_chars: int) -> List[str]:
+    """Split a single chunk into smaller chunks by paragraph boundaries.
+
+    Note: This helper is designed to reduce request size sent to the LLM.
+    If you want to avoid duplicated extracted records, keep overlap at 0 and
+    avoid repeating prefixes across sub-chunks.
+    """
+    text = _normalize_newlines(text).strip()
+    if not text:
+        return []
+    if max_chars <= 0 or len(text) <= max_chars:
+        return [text]
+
+    # IMPORTANT: We intentionally do NOT repeat a shared prefix across all
+    # sub-chunks. Repeating headings/prefix often causes duplicated extraction.
+    # The split should be content-preserving and non-overlapping by default.
+    prefix, body = _extract_prefix_lines(text)
+    if not body:
+        return _window_split(text, max_chars=max_chars, overlap_chars=overlap_chars)
+
+    # Split by blank lines (paragraph-ish). Keep it simple and OCR-tolerant.
+    paras = [p.strip() for p in re.split(r"\n\s*\n", body) if p and p.strip()]
+    if not paras:
+        return _window_split(text, max_chars=max_chars, overlap_chars=overlap_chars)
+
+    out_body: List[str] = []
+    current = ""
+    prev_body = ""
+    for para in paras:
+        # If a single paragraph is too large, split it first.
+        parts = _window_split(para, max_chars=max_chars, overlap_chars=overlap_chars)
+        for part in parts:
+            candidate = part if not current else current + "\n\n" + part
+            if len(candidate) <= max_chars:
+                current = candidate
+                continue
+
+            if current:
+                out_body.append(current.strip())
+                prev_body = current
+                current = ""
+
+            if overlap_chars > 0 and prev_body:
+                tail = _tail_overlap(prev_body, overlap_chars)
+                if tail:
+                    candidate2 = (tail + "\n" + part).strip()
+                    if len(candidate2) <= max_chars:
+                        current = candidate2
+                        continue
+
+            # Still too big; force window split of the part.
+            forced = _window_split(part, max_chars=max_chars, overlap_chars=overlap_chars)
+            if forced:
+                out_body.extend(forced[:-1])
+                current = forced[-1]
+
+    if current.strip():
+        out_body.append(current.strip())
+
+    # Keep prefix only on the FIRST chunk to preserve context without duplication.
+    out: List[str] = []
+    for idx, b in enumerate(out_body):
+        if idx == 0 and prefix:
+            out.append((prefix + "\n\n" + b).strip())
+        else:
+            out.append(b.strip())
+
+    # Merge tiny trailing chunks when possible.
+    merged: List[str] = []
+    for ch in out:
+        if merged and len(ch) < 250 and (len(merged[-1]) + 2 + len(ch)) <= max_chars:
+            merged[-1] = (merged[-1].rstrip() + "\n\n" + ch.lstrip()).strip()
+        else:
+            merged.append(ch)
+    return merged
+
+
+def _enforce_max_chunk_chars(
+    chunks: List[str],
+    *,
+    max_chars: int,
+    overlap_chars: int,
+) -> List[str]:
+    if max_chars <= 0:
+        return [c for c in chunks if c and c.strip()]
+
+    # Always split to enforce max size. Keep overlap at 0 to avoid duplicated extraction.
+    overlap_chars = 0
+    out: List[str] = []
+    for ch in chunks:
+        out.extend(_split_into_max_chars(ch, max_chars=max_chars, overlap_chars=overlap_chars))
+    return [c for c in out if c and c.strip()]
+
+
 def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -435,14 +603,56 @@ def split_cap_cuu_chong_doc(text: str) -> List[str]:
     text = _normalize_newlines(text)
     lines = text.split("\n")
 
+    # Some editions/exports put the number and title on ONE line, e.g.:
+    #   '109. NGỘ ĐỘC THUỐC GÂY NGHIỆN'
+    # We accept optional markdown heading hashes.
+    inline_header = re.compile(r"^\s*#{0,6}\s*(?P<num>\d{1,4})\s*\.\s+(?P<title>.+?)\s*$")
+
+    # The body also contains many numbered *subheadings* inside a protocol, e.g.:
+    #   '1. ĐỊNH NGHĨA :' or '1. MỘT SỐ KHÁI NIỆM'
+    # These would incorrectly split a single protocol into multiple chunks.
+    # Heuristic: only suppress common subheading titles for small numbers.
+    subheading_keywords = (
+        "ĐỊNH NGHĨA",
+        "ĐẠI CƯƠNG",
+        "KHÁI NIỆM",
+    )
+
+    def _is_protocol_title(num: int, title: str) -> bool:
+        t = (title or "").strip()
+        if not t:
+            return False
+        # Subheadings frequently end with ':'
+        if t.endswith(":") or t.endswith("："):
+            return False
+        if num <= 9:
+            up = t.upper()
+            if any(k in up for k in subheading_keywords):
+                return False
+        return True
+
     starts: List[int] = []
     i = 0
     while i < len(lines) - 1:
+        m_inline = inline_header.match(lines[i])
+        if m_inline:
+            num = int(m_inline.group("num"))
+            title = (m_inline.group("title") or "").strip()
+            if title and _looks_like_all_caps_title(title) and _is_protocol_title(num, title):
+                starts.append(i)
+                i += 1
+                continue
+
         if re.match(r"^\s*\d+\s*\.\s*$", lines[i]):
+            num = int(re.sub(r"\D", "", lines[i]) or "0")
             j = i + 1
             while j < len(lines) and not lines[j].strip():
                 j += 1
-            if j < len(lines) and _looks_like_all_caps_title(lines[j]):
+            if (
+                j < len(lines)
+                and _looks_like_all_caps_title(lines[j])
+                and _is_protocol_title(num, lines[j])
+            ):
                 starts.append(i)
                 i = j
         i += 1
@@ -450,7 +660,7 @@ def split_cap_cuu_chong_doc(text: str) -> List[str]:
     chunks = _slice_by_starts(lines, starts)
 
     # Remove TOC-like entries (they're extremely short).
-    return _filter_min_chars(chunks, min_chars=400)
+    return _filter_min_chars(chunks, min_chars=250)
 
 
 # ---------------------------------------------------------------------------
@@ -502,25 +712,66 @@ def split_by_book(filepath: str, text: str, split_kind: Optional[str] = None) ->
     norm_path = filepath.replace("\\", "/").lower()
 
     # Special-case: this file contains both plant monographs and recipes.
+    max_chunk_chars = _get_int_env("CHATBOT_MAX_CHUNK_CHARS", 3000)
+    # Default overlap is 0 because overlap often creates duplicated extracted records.
+    overlap_chars = _get_int_env("CHATBOT_CHUNK_OVERLAP_CHARS", 0)
+    if overlap_chars < 0:
+        overlap_chars = 0
+
     if "cay-canh--cay-thuoc" in norm_path:
         if split_kind and split_kind.lower() == "recipes":
-            return split_cay_canh_cay_thuoc_recipes(text)
-        return split_cay_canh_cay_thuoc_plants(text)
+            chunks = split_cay_canh_cay_thuoc_recipes(text)
+            return _enforce_max_chunk_chars(
+                chunks,
+                max_chars=max_chunk_chars,
+                overlap_chars=overlap_chars,
+            )
+        chunks = split_cay_canh_cay_thuoc_plants(text)
+        return _enforce_max_chunk_chars(
+            chunks,
+            max_chars=max_chunk_chars,
+            overlap_chars=overlap_chars,
+        )
 
     # Special-case: endocrine book contains syndromes (Part 2) and plant monographs (Part 3).
     if "noi-tiet" in norm_path:
         if split_kind and split_kind.lower() == "plants":
-            return split_noi_tiet_plants(text)
+            chunks = split_noi_tiet_plants(text)
+            return _enforce_max_chunk_chars(
+                chunks,
+                max_chars=max_chunk_chars,
+                overlap_chars=overlap_chars,
+            )
         if split_kind and split_kind.lower() == "syndromes":
-            return split_noi_tiet_syndromes(text)
-        return split_noi_tiet(text)
+            chunks = split_noi_tiet_syndromes(text)
+            return _enforce_max_chunk_chars(
+                chunks,
+                max_chars=max_chunk_chars,
+                overlap_chars=overlap_chars,
+            )
+        chunks = split_noi_tiet(text)
+        return _enforce_max_chunk_chars(
+            chunks,
+            max_chars=max_chunk_chars,
+            overlap_chars=overlap_chars,
+        )
 
     for spec in _SPLITTERS:
         if spec.matcher(norm_path):
-            return spec.splitter(text)
+            chunks = spec.splitter(text)
+            return _enforce_max_chunk_chars(
+                chunks,
+                max_chars=max_chunk_chars,
+                overlap_chars=overlap_chars,
+            )
 
     cleaned = _normalize_newlines(text).strip()
-    return [cleaned] if cleaned else []
+    chunks = [cleaned] if cleaned else []
+    return _enforce_max_chunk_chars(
+        chunks,
+        max_chars=max_chunk_chars,
+        overlap_chars=overlap_chars,
+    )
 
 # ---------------------------------------------------------------------------
 # EXAMPLE USAGE

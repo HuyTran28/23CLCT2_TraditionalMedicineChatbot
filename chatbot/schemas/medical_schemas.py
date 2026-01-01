@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, field_validator
 from pydantic.config import ConfigDict
 from typing import List, Optional, Any
 from enum import Enum
@@ -439,6 +439,43 @@ class EmergencyProtocol(BaseModel):
         default_factory=list,
         description="Ảnh liên quan trong chunk (nếu có)",
     )
+
+    @field_validator(
+        "clinical_signs",
+        "first_aid_steps",
+        "professional_treatment",
+        "medications",
+        "images",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_lists(cls, v: Any):
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        # Sometimes the LLM emits a single string for list fields.
+        return [v]
+
+    @field_validator(
+        "diagnostic_tests",
+        "specific_antidote",
+        "contraindications_warnings",
+        "prevention",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_optional_strings(cls, v: Any):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            return s or None
+        # LLM sometimes emits a list of strings for optional string fields.
+        if isinstance(v, list):
+            parts = [str(x).strip() for x in v if str(x).strip()]
+            return "\n".join(parts) if parts else None
+        return str(v).strip() or None
 
 
 class EmergencyDocumentContent(BaseModel):

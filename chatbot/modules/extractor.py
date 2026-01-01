@@ -3,7 +3,7 @@ import os
 import re
 import time
 import random
-from typing import Type, TypeVar, List, Optional, Any
+from typing import Type, TypeVar, List, Optional, Any, get_args, get_origin
 from pydantic import BaseModel
 import logging
 from dotenv import load_dotenv
@@ -64,6 +64,51 @@ def _get_retry_after_seconds(exc: BaseException) -> Optional[float]:
         ra = headers.get("retry-after") or headers.get("Retry-After")
     except Exception:
         return None
+
+
+def _is_request_too_large_error(exc: BaseException) -> bool:
+    """Detect 413 / TPM-request-too-large style errors from Groq."""
+    sc = getattr(exc, "status_code", None)
+    if sc == 413:
+        return True
+    resp = getattr(exc, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 413:
+        return True
+
+    msg = (str(exc) or "").lower()
+    # Groq commonly surfaces these in message text.
+    return (
+        "error code: 413" in msg
+        or "request too large" in msg
+        or "tokens per minute" in msg
+        or "tpm" in msg
+        or ("413" in msg and "too large" in msg)
+    )
+
+
+def _format_type_hint(annotation: Any) -> str:
+    """Compact, readable type hints for prompts."""
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+
+    if annotation is None:
+        return "null"
+    if origin is list or origin is List:
+        inner = _format_type_hint(args[0]) if args else "Any"
+        return f"List[{inner}]"
+    # Optional[T] is Union[T, NoneType]
+    if origin is getattr(__import__("typing"), "Union"):
+        non_none = [a for a in args if a is not type(None)]  # noqa: E721
+        if len(non_none) == 1 and len(args) == 2:
+            return f"Optional[{_format_type_hint(non_none[0])}]"
+        return "Union[" + ", ".join(_format_type_hint(a) for a in args) + "]"
+    # Builtins / simple types
+    try:
+        if hasattr(annotation, "__name__"):
+            return annotation.__name__
+    except Exception:
+        pass
+    return str(annotation).replace("typing.", "")
 
     if ra is None:
         return None
@@ -225,9 +270,14 @@ class MedicalDataExtractor:
 
         cleaned_text = _normalize_whitespace(_dedupe_consecutive_lines(text))
 
-        # Make the prompt schema-driven so this extractor works across many schemas.
-        schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+        # Make the prompt schema-driven but keep it compact to reduce token usage.
         allowed_keys = ", ".join(schema.model_fields.keys())
+        field_lines: list[str] = []
+        for fname, f in schema.model_fields.items():
+            field_type = _format_type_hint(getattr(f, "annotation", Any))
+            required = "required" if f.is_required() else "optional"
+            field_lines.append(f"- {fname}: {field_type} ({required})")
+        schema_compact = "\n".join(field_lines)
 
         prompt_template = f"""
 Bạn là chuyên gia trích xuất dữ liệu tiếng Việt từ văn bản OCR (y học/cây thuốc). Nhiệm vụ: tạo JSON đúng schema.
@@ -252,12 +302,14 @@ Yêu cầu bắt buộc:
 6) Dọn nhiễu OCR: nếu văn bản có câu/đoạn trùng lặp, chỉ giữ một lần trong nội dung trích xuất.
 7) Giữ nguyên thuật ngữ tiếng Việt, không dịch.
 
-Schema JSON:
-{schema_json}
+Schema (compact):
+{schema_compact}
 """
         
         json_attempt = 0
         rate_attempt = 0
+        too_large_attempt = 0
+        current_text = cleaned_text
         while True:
             try:
                 program = LLMTextCompletionProgram.from_defaults(
@@ -267,7 +319,7 @@ Schema JSON:
                     verbose=False
                 )
 
-                result = program(text=cleaned_text)
+                result = program(text=current_text)
                 result = _clean_model_instance(result)
                 logger.info("✓ Extraction successful")
                 return result
@@ -280,6 +332,26 @@ Schema JSON:
                 continue
             
             except Exception as e:
+                if _is_request_too_large_error(e):
+                    too_large_attempt += 1
+                    if too_large_attempt > 3:
+                        logger.error("✗ Request too large too many times; giving up")
+                        raise
+
+                    # Reduce payload and retry. Keep start of chunk (often includes headings)
+                    # and trim progressively.
+                    if len(current_text) < 600:
+                        raise
+
+                    new_len = max(400, int(len(current_text) * 0.7))
+                    current_text = current_text[:new_len]
+                    logger.warning(
+                        "⚠ Request too large (413/TPM). "
+                        f"Truncating input to {len(current_text)} chars and retrying "
+                        f"(attempt {too_large_attempt}/3)."
+                    )
+                    continue
+
                 if _is_rate_limit_error(e):
                     rate_attempt += 1
                     if rate_attempt > self.rate_limit_retries:
