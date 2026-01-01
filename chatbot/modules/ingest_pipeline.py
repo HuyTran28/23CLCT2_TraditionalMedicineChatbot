@@ -19,7 +19,12 @@ _NESTED_IMAGE_RE = re.compile(
 )
 _GENERIC_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 _BREAK_TAG_RE = re.compile(r"</?break\s*/?>", re.IGNORECASE)
-_HEADING_NUMBER_RE = re.compile(r"^(?P<prefix>\s*#{1,6}\s*)?(?P<num>\(?\s*\d+\s*\)?)[\.)]\s+", re.UNICODE)
+_HEADING_NUMBER_RE = re.compile(
+    r"^(?P<prefix>\s*#{1,6}\s*)(?P<num>\(?\s*\d+\s*\)?)(?:\s*[\.)])?\s+",
+    re.UNICODE,
+)
+
+_PLAIN_NUMBER_RE = re.compile(r"^\s*\d+\s*[\.)]\s+", re.UNICODE)
 
 
 def _sanitize_chunk_text_for_llm(text: str) -> str:
@@ -44,8 +49,12 @@ def _sanitize_chunk_text_for_llm(text: str) -> str:
         # Drop standalone break tags anywhere in the line.
         ln = _BREAK_TAG_RE.sub(" ", ln)
 
-        # Remove leading numbering like: '6. ...' or '## 6. ...'
-        ln = _HEADING_NUMBER_RE.sub(lambda m: (m.group("prefix") or ""), ln)
+        # Remove leading numbering like: '## 6 ...', '#### (7) ...', '#### 1) ...'
+        # and, as a fallback, plain list numbering like: '6. ...'
+        if ln.lstrip().startswith("#"):
+            ln = _HEADING_NUMBER_RE.sub(lambda m: (m.group("prefix") or ""), ln)
+        else:
+            ln = _PLAIN_NUMBER_RE.sub("", ln)
 
         # Compact the dataset's nested image syntax into a tiny placeholder.
         # Example: ![](![id: foo_img_007](foo_img_007.png)) -> [[IMAGE:foo_img_007]]

@@ -178,3 +178,31 @@ py main.py query --persist-dir vector_data --backend disk --question "Cây gì t
 Notes:
 - Routing is implemented in `modules/router_engine.py`.
 - Retrieval is done by `MedicalVectorStore.query()` against the chosen `index_type`.
+
+## Run the extract_test script (quick extractor smoke-test)
+
+The helper script [scripts/extract_test.py](scripts/extract_test.py) samples markdown chunks, runs a mock extractor (or the real Groq extractor), and writes JSONL records to an output file. Run it from the repository root so imports resolve correctly.
+
+Basic (mock extractor — no GROQ key required):
+
+```powershell
+py scripts\extract_test.py --input data/raw/cay-canh--cay-thuoc-trong-nha-truong --schema MedicinalPlant --sample 5 --out data/processed/test_extracted.jsonl
+```
+
+Use the real Groq extractor (requires `GROQ_API_KEY` in env or pass `--groq-key`):
+
+```powershell
+$env:GROQ_API_KEY = "..."
+py scripts\extract_test.py --input data/raw/cay-canh--cay-thuoc-trong-nha-truong --schema MedicinalPlant --sample 5 --use-llm --rpm 2 --out data/processed/test_extracted.jsonl --enrich-images --image-store-dir data/processed/images
+```
+
+Common options:
+- `--input`: Markdown file or directory containing `.md` files.
+- `--schema`: Pydantic schema name (e.g., `MedicinalPlant`, `RemedyRecipe`, `EndocrineSyndrome`).
+- `--sample`: Number of chunks to sample (default 10).
+- `--use-llm`: Use the real Groq extractor (requires API key).
+- `--groq-key`: Pass a Groq key on the command line (overrides env).
+- `--out`: Output JSONL path (default `data/processed/test_extracted.jsonl`).
+- `--enrich-images`: Attach and store image metadata; use with `--image-store-dir`.
+
+The script prints a short validation summary and a few sample records after writing the output file.

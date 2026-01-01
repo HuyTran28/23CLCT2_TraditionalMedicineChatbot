@@ -273,8 +273,169 @@ def split_cay_rau_lam_thuoc(text: str) -> List[str]:
             starts.append(i)
     chunks = _slice_by_starts(lines, starts)
 
+    # Some entries include multiple distinct variants inside one entry (e.g. "MƯỚP" has
+    # "MƯỚP KHÍA" and "MƯỚP HƯƠNG"). For extraction we want separate chunks so the LLM can
+    # emit separate MedicinalVegetable records.
+    out: List[str] = []
+    for ch in chunks:
+        out.extend(_split_vegetable_variants(ch))
+
     # Filter out accidental section headings without content.
-    return _filter_min_chars(chunks, min_chars=250)
+    return _filter_min_chars(out, min_chars=250)
+
+
+def _split_vegetable_variants(entry_chunk: str) -> List[str]:
+    """Split a single vegetable entry into multiple chunks when variants exist.
+
+    Heuristic (kept intentionally conservative):
+      - Only triggers when we see 2+ ALL-CAPS variant title lines (not markdown headings)
+        that contain the base entry name token.
+      - Variants must appear within the numbered remedy section block (between '1.' and '2.'
+        or later), which is where figure captions typically live.
+
+    Example it should split:
+      - '#### 84 MƯỚP' containing 'MƯỚP KHÍA' and 'MƯỚP HƯƠNG'.
+    """
+    entry_chunk = _normalize_newlines(entry_chunk)
+    lines = entry_chunk.split("\n")
+    if len(lines) < 10:
+        return [entry_chunk]
+
+    # Find the main heading line (first markdown heading in the chunk).
+    heading_idx = None
+    for i, ln in enumerate(lines[:10]):
+        if re.match(r"^\s*#{2,4}\s+", ln):
+            heading_idx = i
+            break
+    if heading_idx is None:
+        heading_idx = 0
+
+    heading_line = lines[heading_idx]
+    heading_text = _md_heading_text(heading_line)
+    # Drop leading numbers like '84 MƯỚP' or '(7) BỌ MẨY'.
+    heading_text = re.sub(r"^\(?\s*\d+\s*\)?\s*[\.)]?\s*", "", heading_text).strip()
+    base_token = (heading_text.split() or [""])[0].upper()
+    if not base_token:
+        return [entry_chunk]
+
+    # Identify numbered section boundaries.
+    numbered = []
+    for i, ln in enumerate(lines):
+        m = re.match(r"^\s*(?P<n>\d{1,3})\s*\.\s+", ln)
+        if m:
+            try:
+                numbered.append((int(m.group("n")), i))
+            except Exception:
+                continue
+    if not numbered:
+        return [entry_chunk]
+
+    numbered.sort(key=lambda x: x[1])
+    # Consider variant captions in the body from section 1 onwards.
+    body_start = numbered[0][1]
+
+    # Candidate variant title lines: all-caps, short, not headings, contains base token.
+    cand_idxs: List[int] = []
+    cand_titles: List[str] = []
+    for i in range(body_start, len(lines)):
+        ln = lines[i]
+        if ln.lstrip().startswith("#"):
+            continue
+        s = ln.strip()
+        if not s:
+            continue
+        if len(s) < 4 or len(s) > 40:
+            continue
+        if not _looks_like_all_caps_title(s):
+            continue
+
+        up = s.upper()
+        # Must include the base token as a word (e.g., 'MƯỚP' in 'MƯỚP KHÍA').
+        if base_token not in up.split():
+            continue
+
+        cand_idxs.append(i)
+        cand_titles.append(s)
+
+    # Need at least 2 variants, and they must be distinct.
+    uniq_titles = []
+    for t in cand_titles:
+        if t not in uniq_titles:
+            uniq_titles.append(t)
+    if len(uniq_titles) < 2:
+        return [entry_chunk]
+
+    # Restrict to the first occurrence index for each unique title.
+    first_idx_by_title: dict[str, int] = {}
+    for idx, title in zip(cand_idxs, cand_titles):
+        first_idx_by_title.setdefault(title, idx)
+    variant_titles = sorted(first_idx_by_title.items(), key=lambda kv: kv[1])
+
+    # Build a map from title->block start/end within the chunk.
+    # Expand each title block upward to include an immediately preceding image line.
+    img_re = re.compile(r"^\s*!\[\]\(|^\s*!\[[^\]]*\]\(")
+
+    blocks: List[tuple[str, int, int]] = []  # (title, start, end)
+    for j, (title, idx) in enumerate(variant_titles):
+        start = idx
+        # Include a directly preceding image line (common in this dataset).
+        k = idx - 1
+        while k >= 0:
+            prev = lines[k].strip()
+            if not prev:
+                k -= 1
+                continue
+            if img_re.search(prev):
+                start = k
+            break
+
+        end = variant_titles[j + 1][1] if j + 1 < len(variant_titles) else len(lines)
+        blocks.append((title, start, end))
+
+    # If we have a clear '2.' section, use it to stop variant blocks (they should live before 2.).
+    sec2_idx = None
+    for n, idx in numbered:
+        if n == 2:
+            sec2_idx = idx
+            break
+    if sec2_idx is not None:
+        blocks = [(t, s, min(e, sec2_idx)) for (t, s, e) in blocks if s < sec2_idx]
+        if len(blocks) < 2:
+            return [entry_chunk]
+
+    # Shared segments:
+    # - prefix: from top of chunk until the start of the *first* variant block
+    # - between_variants: any non-variant content between the last variant block end and section 2
+    # - suffix: from section 2 onward
+    first_block_start = blocks[0][1]
+    prefix = lines[:first_block_start]
+
+    last_block_end = max(e for _, _, e in blocks)
+    between_end = sec2_idx if sec2_idx is not None else last_block_end
+    between_variants = lines[last_block_end:between_end] if last_block_end < between_end else []
+    suffix = lines[sec2_idx:] if sec2_idx is not None else []
+
+    # Remove the original heading line from prefix; we will replace it.
+    prefix_wo_heading = list(prefix)
+    if 0 <= heading_idx < len(prefix_wo_heading):
+        prefix_wo_heading.pop(heading_idx)
+
+    out: List[str] = []
+    for title, start, end in blocks:
+        # Make a unique heading for the variant to guide extraction.
+        # Example: '#### 84 MƯỚP - MƯỚP KHÍA'
+        new_heading = f"{heading_line.rstrip()} - {title.strip()}".strip()
+        chunk_lines: List[str] = [new_heading]
+        if any(x.strip() for x in prefix_wo_heading):
+            chunk_lines.extend(prefix_wo_heading)
+        chunk_lines.extend(lines[start:end])
+        if any(x.strip() for x in between_variants):
+            chunk_lines.extend(between_variants)
+        if any(x.strip() for x in suffix):
+            chunk_lines.extend(suffix)
+        out.append("\n".join(_strip_empty_edges(chunk_lines)).strip())
+
+    return out
 
 
 def split_noi_tiet(text: str) -> List[str]:
