@@ -80,6 +80,8 @@ def main():
         retrieved_texts = [node.node.get_content() for node in response_obj.source_nodes]
         contexts.append(retrieved_texts)
 
+        time.sleep(5)  # Giữ khoảng cách giữa các câu hỏi
+
     # Tạo Dataset đủ 4 cột: question, answer, contexts, ground_truth
     data_dict = {
         "question": questions,
