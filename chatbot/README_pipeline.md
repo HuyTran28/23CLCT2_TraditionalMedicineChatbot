@@ -169,12 +169,33 @@ The `query` command loads all 3 indices under `--persist-dir` and uses an LLM ro
 
 ```powershell
 $env:GROQ_API_KEY = "..."
-py main.py query --persist-dir vector_data --backend disk --question "Cây gì trị ho gà?"
+py main.py query --persist-dir vector_data --backend disk --question "Cây gì trị ho gà?" --verbose --embed-model BAAI/bge-m3 --device cpu --llm-model llama-3.1-8b-instant --max-output-tokens 1024
 ```
 
 Notes:
 - Routing is implemented in `modules/router_engine.py`.
 - Retrieval is done by `MedicalVectorStore.query()` against the chosen `index_type`.
+
+## Run the webapp (local)
+
+You can run the local FastAPI webapp for development. From the `chatbot` folder, install `uvicorn` if needed and start the server. Example PowerShell workflow:
+
+```powershell
+cd chatbot
+# (one-time) install server runtime
+py -m pip install -r requirements.txt
+py -m pip install "uvicorn[standard]"
+
+# Optional: set environment variables for the vector store
+$env:PERSIST_DIR = "vector_data"
+$env:EMBED_MODEL = "BAAI/bge-m3"
+$env:BACKEND = "disk"
+
+# Start the development server (reload enabled)
+py -m uvicorn webapp:app --reload --host 0.0.0.0 --port 8000
+```
+
+The webapp exposes endpoints under `http://localhost:8000/` (e.g., the query API at `/api/query`).
 
 ## Run the extract_test script (quick extractor smoke-test)
 
