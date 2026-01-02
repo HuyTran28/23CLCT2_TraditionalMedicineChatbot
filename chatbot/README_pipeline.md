@@ -123,47 +123,44 @@ py main.py ingest --input ../data/raw/cc_va_chong_doc_258/cc_va_chong_doc_258.md
 
 ## 2) Combine JSONL by `index_type`
 
-Only combine JSONLs that belong to the same target `--index-type`.
+Consolidate multiple extraction outputs into the 4 main index categories. Run these from the **repository root**.
 
-Example: combine all `herbs` JSONLs into one:
-
+**Combine all plant-related JSONLs into `herbs_all.jsonl`:**
 ```powershell
-Get-Content ../data/processed/herbs_plants_*.jsonl | Set-Content ../data/processed/herbs_plants_all.jsonl
-Get-Content ../data/processed/herbs_vegetables_*.jsonl | Set-Content ../data/processed/herbs_vegetables_all.jsonl
-Get-Content ../data/processed/remedies_*.jsonl | Set-Content ../data/processed/remedies_all.jsonl
-Get-Content ../data/processed/endocrine_syndromes_*.jsonl | Set-Content ../data/processed/endocrine_syndromes_all.jsonl
-Get-Content ../data/processed/endocrine_plants_*.jsonl | Set-Content ../data/processed/endocrine_plants_all.jsonl
-Get-Content ../data/processed/emergency_*.jsonl | Set-Content ../data/processed/emergency_all.jsonl
+Get-Content data/processed/herbs_plants_*.jsonl, data/processed/herbs_vegetables_*.jsonl, data/processed/endocrine_plants_*.jsonl | Set-Content data/processed/herbs_all.jsonl
 ```
 
-Example: combine all `diseases` JSONLs:
-
+**Combine all disease/syndrome JSONLs into `diseases_all.jsonl`:**
 ```powershell
-Get-Content ../data/processed/diseases_*.jsonl | Set-Content ../data/processed/diseases_all.jsonl
+Get-Content data/processed/endocrine_syndromes_*.jsonl, data/processed/emergency_cc_merged.jsonl | Set-Content data/processed/diseases_all.jsonl
 ```
 
-Example: combine all `emergency` JSONLs:
-
+**Combine all remedy JSONLs into `remedies_all.jsonl`:**
 ```powershell
-Get-Content ../data/processed/emergency_*.jsonl | Set-Content ../data/processed/emergency_all.jsonl
+Get-Content data/processed/remedies_*.jsonl | Set-Content data/processed/remedies_all.jsonl
+```
+
+**Combine all emergency JSONLs into `emergency_all.jsonl`:**
+```powershell
+Get-Content data/processed/emergency_cc_merged.jsonl | Set-Content data/processed/emergency_all.jsonl
 ```
 
 ## 3) Embed + ingest JSONL to the vector database
 
-This step is local (no Groq calls). For Windows, `--backend disk` is the default and recommended.
+Run these from the `chatbot` directory. This step is local (no Groq calls). For Windows, `--backend disk` is the default and recommended.
 
 With `--persist-dir vector_data`, the on-disk layout is:
 - `vector_data/herbs/` (SQLite + sharded embeddings)
 - `vector_data/diseases/` (SQLite + sharded embeddings)
+- `vector_data/remedies/` (SQLite + sharded embeddings)
 - `vector_data/emergency/` (SQLite + sharded embeddings)
 
 ```powershell
-py main.py ingest --schema MedicinalPlant --index-type herbs_plants --jsonl-out ../data/processed/herbs_plants_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema MedicinalVegetable --index-type herbs_vegetables --jsonl-out ../data/processed/herbs_vegetables_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema RemedyRecipe --index-type remedies --jsonl-out ../data/processed/remedies_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema EndocrineSyndrome --index-type endocrine_syndromes --jsonl-out ../data/processed/endocrine_syndromes_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema MedicinalPlant --index-type endocrine_plants --jsonl-out ../data/processed/endocrine_plants_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
-py main.py ingest --schema EmergencyProtocol --index-type emergency --jsonl-out ../data/processed/emergency_all.jsonl --persist-dir vector_data --embed-model intfloat/multilingual-e5-small --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+cd chatbot
+py main.py ingest --schema MedicinalPlant --index-type herbs --jsonl-out ../data/processed/herbs_all.jsonl --persist-dir vector_data --embed-model BAAI/bge-m3 --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema EndocrineSyndrome --index-type diseases --jsonl-out ../data/processed/diseases_all.jsonl --persist-dir vector_data --embed-model BAAI/bge-m3 --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema RemedyRecipe --index-type remedies --jsonl-out ../data/processed/remedies_all.jsonl --persist-dir vector_data --embed-model BAAI/bge-m3 --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
+py main.py ingest --schema EmergencyProtocol --index-type emergency --jsonl-out ../data/processed/emergency_all.jsonl --persist-dir vector_data --embed-model BAAI/bge-m3 --device cpu --embed-batch 1 --ingest-batch 8 --backend disk
 ```
 
 ## 4) Use the router / chatbot core engine
