@@ -10,8 +10,11 @@ This README only covers:
 ## Install
 
 ```powershell
-cd c:\Users\Admin\Documents\23CLCT2_TraditionalMedicineChatbot\chatbot
+cd c:\Users\Admin\Documents\23CLCT2_TraditionalMedicineChatbot
 py -m pip install -r requirements.txt
+
+# (optional) server runtime
+py -m pip install "uvicorn[standard]"
 ```
 
 ## 1) Extract markdown chunks to JSONL (Groq)

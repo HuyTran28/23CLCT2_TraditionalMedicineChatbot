@@ -28,12 +28,40 @@ DEVICE = os.getenv("DEVICE", "cpu")
 BACKEND = os.getenv("BACKEND", "disk")
 
 
-def _get_groq_llm():
+def _get_llm():
+    backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
+    hf_model_id = (os.getenv("HF_MODEL") or "").strip()
+
+    if backend == "hf" or hf_model_id:
+        model_id = hf_model_id or os.getenv("GROQ_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+        except Exception as e:
+            raise RuntimeError("Self-hosted (HF) backend requires transformers to be installed") from e
+
+        try:
+            from llama_index.llms.huggingface import HuggingFaceLLM
+        except Exception as e:
+            raise RuntimeError("Self-hosted (HF) backend requires llama-index-llms-huggingface") from e
+
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+        import torch
+
+        force_cpu = (os.getenv("FORCE_CPU") or "").strip().lower() in {"1", "true", "yes", "y"}
+        device_map = (os.getenv("HF_DEVICE_MAP") or "").strip() or None
+        if device_map is None:
+            device_map = "cpu" if (force_cpu or os.name == "nt") else "auto"
+        torch_dtype = "auto" if device_map != "cpu" else torch.float32
+
+        hf_model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, torch_dtype=torch_dtype)
+        return HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=1024)
+
     from llama_index.llms.groq import Groq
 
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise RuntimeError("GROQ_API_KEY not set in environment")
+        raise RuntimeError("GROQ_API_KEY not set (or set HF_MODEL/LLM_BACKEND=hf for self-hosting)")
     return Groq(api_key=api_key, model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"), temperature=0.0, max_tokens=1024)
 
 
@@ -48,7 +76,7 @@ _VS = MedicalVectorStore(
 
 _LLM = None
 try:
-    _LLM = _get_groq_llm()
+    _LLM = _get_llm()
 except Exception:
     # allow local use without GROQ for diagnostics; queries that require LLM will error later
     _LLM = None

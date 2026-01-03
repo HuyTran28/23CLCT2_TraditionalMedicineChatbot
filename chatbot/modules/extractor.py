@@ -13,7 +13,9 @@ load_dotenv()
 
 # LlamaIndex imports
 from llama_index.core.program import LLMTextCompletionProgram
-from llama_index.llms.groq import Groq
+
+# Optional LLM backends (Groq API or self-hosted HuggingFace)
+from typing import Literal
 
 # Book-aware splitting for extraction boundaries
 from modules.book_splitters import split_by_book
@@ -23,6 +25,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 ModelT = TypeVar('ModelT', bound=BaseModel)
+
+
+LLMBackend = Literal["hf", "groq"]
 
 
 class RateLimitPauseRequired(RuntimeError):
@@ -167,7 +172,7 @@ class MedicalDataExtractor:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "llama-3.3-70b-versatile",
+        model: str = "Qwen/Qwen2.5-7B-Instruct",
         temperature: float = 0.0,
         max_tokens: int = 1024,
         retry_count: int = 3,
@@ -175,35 +180,158 @@ class MedicalDataExtractor:
         rate_limit_base_sleep_seconds: float = 2.0,
         rate_limit_max_sleep_seconds: float = 60.0,
         rate_limit_max_retry_after_seconds: float = 120.0,
+        backend: Optional[LLMBackend] = None,
+        load_in_4bit: Optional[bool] = None,
+        device_map: Optional[str] = None,
     ):
         """
         Initialize the extractor.
         
         Args:
-            api_key: Groq API key (defaults to GROQ_API_KEY env var)
-            model: Groq model name (llama-3.3-70b-versatile is fastest)
+            api_key: Groq API key (defaults to GROQ_API_KEY env var) when backend="groq"
+            model:
+              - backend="groq": Groq model name (e.g., llama-3.3-70b-versatile)
+              - backend="hf": HuggingFace model id/path (e.g., Qwen/Qwen2.5-7B-Instruct)
             temperature: 0.0 for deterministic medical extraction
             retry_count: How many times to retry on JSON errors
             rate_limit_retries: Max retries when hitting 429 Too Many Requests
             rate_limit_base_sleep_seconds: Base sleep when 429 has no Retry-After header
             rate_limit_max_sleep_seconds: Cap for exponential backoff sleeps
+            backend: "hf" (self-hosted) or "groq" (API). Defaults to EXTRACTOR_BACKEND env var, then auto.
+            load_in_4bit: For backend="hf" only. If None, auto-enable on CUDA (non-Windows) when bitsandbytes is available.
+                        device_map: For backend="hf" only. If None, defaults to:
+                            - "cpu" on Windows (to avoid consuming local GPU)
+                            - "auto" elsewhere
         """
-        self.api_key = api_key or os.getenv("GROQ_API_KEY")
-        if not self.api_key:
-            raise ValueError("GROQ_API_KEY environment variable not set")
-        
-        self.llm = Groq(
-            api_key=self.api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=int(max_tokens),
-        )
+
+        backend = (backend or os.getenv("EXTRACTOR_BACKEND") or os.getenv("LLM_BACKEND") or "").strip().lower() or None
+        if backend not in {None, "hf", "groq"}:
+            raise ValueError(f"Unsupported backend: {backend}. Use 'hf' or 'groq'.")
+
+        # Auto backend selection:
+        # - If HF_MODEL is set, prefer self-hosted.
+        # - Else, if GROQ_API_KEY is set, use Groq.
+        # - Else default to self-hosted (will error with a clear message if model can't be loaded).
+        if backend is None:
+            if os.getenv("HF_MODEL"):
+                backend = "hf"
+            elif os.getenv("GROQ_API_KEY"):
+                backend = "groq"
+            else:
+                backend = "hf"
+
+        self.backend: LLMBackend = backend  # type: ignore[assignment]
+
+        if self.backend == "groq":
+            self.api_key = api_key or os.getenv("GROQ_API_KEY")
+            if not self.api_key:
+                raise ValueError("GROQ_API_KEY environment variable not set (backend='groq')")
+
+            try:
+                from llama_index.llms.groq import Groq
+            except Exception as e:
+                raise RuntimeError(
+                    "Groq backend requested but llama-index Groq integration is missing. "
+                    "Install llama-index-llms-groq."
+                ) from e
+
+            self.llm = Groq(
+                api_key=self.api_key,
+                model=model,
+                temperature=temperature,
+                max_tokens=int(max_tokens),
+            )
+            logger.info(f"Initialized Groq LLM: {model}")
+
+        else:
+            # HuggingFace self-hosted backend
+            hf_model_id = (os.getenv("HF_MODEL") or model).strip()
+            if not hf_model_id:
+                raise ValueError("HF model id/path is empty. Set HF_MODEL or pass model=... (backend='hf')")
+
+            try:
+                from transformers import AutoTokenizer, AutoModelForCausalLM
+            except Exception as e:
+                raise RuntimeError(
+                    "HuggingFace backend requested but transformers is missing. Install transformers."
+                ) from e
+
+            try:
+                import torch
+            except Exception as e:
+                raise RuntimeError(
+                    "HuggingFace backend requested but torch is missing. Install torch."
+                ) from e
+
+            force_cpu = (os.getenv("FORCE_CPU") or "").strip().lower() in {"1", "true", "yes", "y"}
+
+            # Default device_map behavior:
+            # - On Windows, prefer CPU by default (user asked to not consume local GPU).
+            # - On Colab/Linux, allow "auto".
+            # - Allow override via HF_DEVICE_MAP or explicit device_map parameter.
+            env_device_map = (os.getenv("HF_DEVICE_MAP") or "").strip() or None
+            if device_map is None:
+                device_map = env_device_map
+            if device_map is None:
+                device_map = "cpu" if (force_cpu or os.name == "nt") else "auto"
+
+            # Auto 4-bit behavior: best effort.
+            # - Disable if forcing CPU or on Windows.
+            if load_in_4bit is None:
+                load_in_4bit = bool(torch.cuda.is_available() and (os.name != "nt") and (not force_cpu))
+            if force_cpu:
+                load_in_4bit = False
+
+            quantization_config = None
+            if load_in_4bit:
+                try:
+                    from transformers import BitsAndBytesConfig
+
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_compute_dtype=torch.float16,
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        "load_in_4bit=True requires bitsandbytes + accelerate. "
+                        "On Colab: pip install -U bitsandbytes accelerate. "
+                        "On Windows native, 4-bit is usually unsupported; set load_in_4bit=False."
+                    ) from e
+
+            tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
+            # torch_dtype: on CPU, prefer float32 for compatibility.
+            torch_dtype = "auto" if (device_map != "cpu") else torch.float32
+
+            hf_model = AutoModelForCausalLM.from_pretrained(
+                hf_model_id,
+                device_map=device_map,
+                quantization_config=quantization_config,
+                torch_dtype=torch_dtype,
+            )
+
+            # LlamaIndex HF LLM wrapper
+            try:
+                from llama_index.llms.huggingface import HuggingFaceLLM
+            except Exception as e:
+                raise RuntimeError(
+                    "HuggingFaceLLM is not available. Install llama-index-llms-huggingface."
+                ) from e
+
+            self.llm = HuggingFaceLLM(
+                model=hf_model,
+                tokenizer=tokenizer,
+                temperature=float(temperature),
+                max_new_tokens=int(max_tokens),
+            )
+            logger.info(f"Initialized HuggingFace LLM (self-hosted): {hf_model_id}")
+
         self.retry_count = retry_count
         self.rate_limit_retries = max(0, int(rate_limit_retries))
         self.rate_limit_base_sleep_seconds = max(0.0, float(rate_limit_base_sleep_seconds))
         self.rate_limit_max_sleep_seconds = max(0.0, float(rate_limit_max_sleep_seconds))
         self.rate_limit_max_retry_after_seconds = max(0.0, float(rate_limit_max_retry_after_seconds))
-        logger.info(f"Initialized Groq LLM: {model}")
     
     def extract_single(
         self,

@@ -58,8 +58,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--extract", action="store_true", help="Run LLM extraction step (uses GROQ)")
     ingest.add_argument(
         "--model",
-        default="llama-3.1-8b-instant",
-        help="Groq model for extraction (8B is recommended on free tier to avoid TPD limits)",
+        default=os.getenv("HF_MODEL") or "llama-3.1-8b-instant",
+        help=(
+            "LLM model for extraction. If HF_MODEL/LLM_BACKEND=hf is set, this is a HuggingFace model id/path; "
+            "otherwise it's a Groq model name."
+        ),
     )
     ingest.add_argument(
         "--max-output-tokens",
@@ -100,7 +103,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     query.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Embedding device")
     query.add_argument("--shard-size", type=int, default=2048, help="Disk-backend shard rows (backend=disk)")
     query.add_argument("--question", required=True, help="User question")
-    query.add_argument("--model", default="llama-3.3-70b-versatile", help="Groq model for routing + answering")
+    query.add_argument(
+        "--model",
+        default=os.getenv("HF_MODEL") or "llama-3.3-70b-versatile",
+        help=(
+            "LLM model for routing + answering. If HF_MODEL/LLM_BACKEND=hf is set, this is a HuggingFace model id/path; "
+            "otherwise it's a Groq model name."
+        ),
+    )
     query.add_argument("--herbs-top-k", type=int, default=3, help="Top-k retrieval for herbs")
     query.add_argument("--diseases-top-k", type=int, default=3, help="Top-k retrieval for diseases")
     query.add_argument("--emergency-top-k", type=int, default=2, help="Top-k retrieval for emergency")
@@ -116,8 +126,6 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
     # Optional extraction step (guarded so you don't accidentally trigger paid usage)
     if args.extract:
-        if not os.getenv("GROQ_API_KEY"):
-            raise ValueError("--extract requires GROQ_API_KEY in environment")
         extractor = MedicalDataExtractor(
             model=args.model,
             max_tokens=args.max_output_tokens,
@@ -172,13 +180,42 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
 
 def cmd_query(args: argparse.Namespace) -> None:
-    if not os.getenv("GROQ_API_KEY"):
-        raise ValueError("query requires GROQ_API_KEY in environment")
-
-    from llama_index.llms.groq import Groq
     from modules.router_engine import build_router_query_engine
 
-    llm = Groq(api_key=os.getenv("GROQ_API_KEY"), model=args.model, temperature=0.0, max_tokens=1024)
+    backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
+    hf_model_id = (os.getenv("HF_MODEL") or "").strip()
+
+    if backend == "hf" or hf_model_id:
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+        except Exception as e:
+            raise RuntimeError("Self-hosted (HF) backend requires transformers to be installed") from e
+
+        try:
+            from llama_index.llms.huggingface import HuggingFaceLLM
+        except Exception as e:
+            raise RuntimeError("Self-hosted (HF) backend requires llama-index-llms-huggingface") from e
+
+        model_id = hf_model_id or args.model
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        import os
+        import torch
+
+        force_cpu = (os.getenv("FORCE_CPU") or "").strip().lower() in {"1", "true", "yes", "y"}
+        device_map = (os.getenv("HF_DEVICE_MAP") or "").strip() or None
+        if device_map is None:
+            device_map = "cpu" if (force_cpu or os.name == "nt") else "auto"
+        torch_dtype = "auto" if device_map != "cpu" else torch.float32
+
+        hf_model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, torch_dtype=torch_dtype)
+        llm = HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=1024)
+    else:
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError("query requires GROQ_API_KEY, or set HF_MODEL/LLM_BACKEND=hf for self-hosting")
+        from llama_index.llms.groq import Groq
+
+        llm = Groq(api_key=api_key, model=args.model, temperature=0.0, max_tokens=1024)
 
     vs = MedicalVectorStore(
         persist_dir=args.persist_dir,

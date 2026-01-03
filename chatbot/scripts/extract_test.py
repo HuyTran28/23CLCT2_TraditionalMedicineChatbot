@@ -81,8 +81,15 @@ def run(args):
     if args.use_llm:
         from modules.extractor import MedicalDataExtractor
 
-        if not args.groq_key and not (Path('.env').exists() or 'GROQ_API_KEY' in __import__('os').environ):
-            raise RuntimeError('GROQ API key not found. Set GROQ_API_KEY or pass --groq-key')
+        import os
+
+        backend = (os.getenv('EXTRACTOR_BACKEND') or os.getenv('LLM_BACKEND') or '').strip().lower()
+        using_hf = bool(backend == 'hf' or os.getenv('HF_MODEL'))
+
+        if not using_hf:
+            if not args.groq_key and not (Path('.env').exists() or 'GROQ_API_KEY' in os.environ):
+                raise RuntimeError('Groq API key not found. Set GROQ_API_KEY or pass --groq-key, or set HF_MODEL/LLM_BACKEND=hf for self-hosting')
+
         extractor = MedicalDataExtractor(api_key=args.groq_key) if args.groq_key else MedicalDataExtractor()
 
         texts = [c['text'] for c in chunks]
