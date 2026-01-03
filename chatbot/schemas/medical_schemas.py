@@ -1,3 +1,5 @@
+import json
+
 from pydantic import BaseModel, Field, model_validator
 from pydantic.config import ConfigDict
 from typing import List, Optional, Any
@@ -673,6 +675,75 @@ class EmergencyProtocol(BaseModel):
         default_factory=list,
         description="Ảnh liên quan trong chunk (nếu có)",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_emergency_fields(cls, data: Any):
+        if not isinstance(data, dict):
+            return data
+
+        d = dict(data)
+
+        def _coerce_optional_str(key: str):
+            v = d.get(key)
+            if v is None:
+                return
+            if isinstance(v, list):
+                d[key] = "; ".join(str(x).strip() for x in v if str(x).strip())
+                return
+            if isinstance(v, dict):
+                d[key] = json.dumps(v, ensure_ascii=False)
+                return
+            if not isinstance(v, str):
+                d[key] = str(v)
+
+        def _coerce_required_str(key: str):
+            v = d.get(key)
+            if v is None:
+                d[key] = ""
+                return
+            if isinstance(v, list):
+                d[key] = ", ".join(str(x).strip() for x in v if str(x).strip())
+                return
+            if isinstance(v, dict):
+                d[key] = json.dumps(v, ensure_ascii=False)
+                return
+            if not isinstance(v, str):
+                d[key] = str(v)
+
+        def _coerce_list_str(key: str):
+            v = d.get(key)
+            if v is None:
+                d[key] = []
+                return
+            if isinstance(v, list):
+                return
+            if isinstance(v, str):
+                s = v.strip()
+                d[key] = [s] if s else []
+                return
+            if isinstance(v, dict):
+                d[key] = [json.dumps(v, ensure_ascii=False)]
+                return
+            d[key] = [str(v)]
+
+        _coerce_required_str("condition_name")
+        _coerce_required_str("category")
+
+        _coerce_list_str("clinical_signs")
+        _coerce_list_str("first_aid_steps")
+        _coerce_list_str("professional_treatment")
+        _coerce_list_str("medications")
+        # images is normally a list of objects; keep list if already list.
+        if d.get("images") is None:
+            d["images"] = []
+
+        _coerce_optional_str("diagnostic_tests")
+        _coerce_optional_str("specific_antidote")
+        _coerce_optional_str("contraindications_warnings")
+        _coerce_optional_str("prevention")
+
+        return d
 
 
 class EmergencyDocumentContent(BaseModel):

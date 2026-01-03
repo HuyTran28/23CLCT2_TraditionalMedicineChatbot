@@ -79,8 +79,7 @@ def _is_botanical_features_question(question: str) -> bool:
 
 
 def _workspace_root() -> Path:
-    # webapp.py lives in the chatbot/ folder.
-    return Path(__file__).resolve().parent
+    return Path(__file__).resolve().parent.parent
 
 
 def _coerce_source_path(sp: str) -> Path:
@@ -237,7 +236,7 @@ def _maybe_filter_chunks_for_images(index_type: str, chunks: List[Any], question
     qtok = [t for t in (focus_tokens or _tokens(question)) if t]
     qset = set(qtok)
 
-    name_key = "plant_name" if index_type in {"herbs_plants", "herbs_vegetables"} else None
+    name_key = "plant_name" if index_type == "herbs" else None
     if not name_key:
         return chunks[:1]
 
@@ -346,7 +345,7 @@ def query_internal(question: str, include_images: bool = True, verbose: bool = F
         index_type, ranked = _ROUTER._select_index_type(q)
     else:
         # fallback
-        index_type = "herbs_plants"
+        index_type = "herbs"
         ranked = [(index_type, 0.0)]
 
     engine = None

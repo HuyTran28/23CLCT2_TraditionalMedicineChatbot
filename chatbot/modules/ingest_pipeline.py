@@ -3,13 +3,16 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Type
+from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Type, TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from modules.extractor import MedicalDataExtractor, RateLimitPauseRequired
-from modules.vector_store import MedicalVectorStore
 from modules.book_splitters import split_by_book
+
+if TYPE_CHECKING:
+    # Avoid importing embedding backends at module import time.
+    from modules.vector_store import MedicalVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,8 @@ _NESTED_IMAGE_RE = re.compile(
 )
 _GENERIC_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 _BREAK_TAG_RE = re.compile(r"</?break\s*/?>", re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r"<!--[^>]*?-->")
+_PAGE_MARKER_RE = re.compile(r"^\s*#{1,6}\s*page\s*\d+\s*$", re.IGNORECASE)
 _HEADING_NUMBER_RE = re.compile(
     r"^(?P<prefix>\s*#{1,6}\s*)(?P<num>\(?\s*\d+\s*\)?)(?:\s*[\.)])?\s+",
     re.UNICODE,
@@ -44,6 +49,14 @@ def _sanitize_chunk_text_for_llm(text: str) -> str:
     for ln in lines:
         if not ln:
             out_lines.append(ln)
+            continue
+
+        # Drop PDF extraction HTML comments like: <!-- page=1 bbox=(...) -->
+        ln = _HTML_COMMENT_RE.sub(" ", ln)
+
+        # Drop standalone page markers: '## Page 11'
+        if _PAGE_MARKER_RE.match(ln):
+            out_lines.append("")
             continue
 
         # Drop standalone break tags anywhere in the line.
@@ -333,20 +346,24 @@ def iter_text_records_from_jsonl(
 
 
 def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
-    if index_type in {"herbs_plants", "herbs"}:
-        # MedicinalPlant-like
+    if index_type == "herbs":
+        # Supports MedicinalPlant, MedicinalVegetable, and endocrine plants.
         plant = data.get("plant_name") or data.get("name") or ""
         other = data.get("other_names") or []
         sci = data.get("scientific_name") or ""
         family = data.get("family") or ""
         feats = data.get("botanical_features") or data.get("botanical_description") or ""
         dist = data.get("distribution_and_ecology") or ""
-        props = data.get("properties_and_dosage") or data.get("properties") or ""
+        props = data.get("properties_and_dosage") or data.get("properties") or data.get("medicinal_properties") or ""
         pharm = data.get("pharmacological_effects") or []
         parts_used = data.get("parts_used") or []
         treats = data.get("treats") or []
         warns = data.get("contraindications_warnings") or ""
         apps = data.get("therapeutic_applications") or []
+        
+        # Vegetable specific
+        culinary = data.get("culinary_uses") or ""
+        veg_remedies = data.get("remedies") or []
 
         out: list[str] = []
         if plant:
@@ -361,6 +378,8 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
             out.append(f"Đặc điểm thực vật: {feats}")
         if dist:
             out.append(f"Phân bố/Sinh thái: {dist}")
+        if culinary:
+            out.append(f"Công dụng ẩm thực: {culinary}")
         if props:
             out.append(f"Tính vị/Công năng/Liều dùng: {props}")
         if pharm:
@@ -388,6 +407,12 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
             out.append(
                 "Chỉ định/Trị: "
                 + (", ".join(treats) if isinstance(treats, list) else str(treats))
+            )
+        
+        if veg_remedies:
+            out.append(
+                "Bài thuốc: "
+                + (", ".join(veg_remedies) if isinstance(veg_remedies, list) else str(veg_remedies))
             )
 
         # therapeutic_applications (RemedyApplication)
@@ -417,24 +442,6 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
 
         return "\n".join(out).strip()
 
-    if index_type == "herbs_vegetables":
-        name = data.get("plant_name") or ""
-        sci = data.get("scientific_name") or ""
-        family = data.get("family") or ""
-        desc = data.get("botanical_description") or ""
-        culinary = data.get("culinary_uses") or ""
-        props = data.get("medicinal_properties") or ""
-        remedies = data.get("remedies") or []
-        return (
-            f"Vegetable: {name}\n"
-            f"Scientific name: {sci}\n"
-            f"Family: {family}\n"
-            f"Description: {desc}\n"
-            f"Culinary uses: {culinary}\n"
-            f"Medicinal properties: {props}\n"
-            f"Remedies: {', '.join(remedies) if isinstance(remedies, list) else remedies}\n"
-        ).strip()
-
     if index_type == "remedies":
         rname = data.get("recipe_name") or ""
         source = data.get("source_plant") or ""
@@ -451,7 +458,7 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
             f"Benefits: {', '.join(benefits) if isinstance(benefits, list) else benefits}\n"
         ).strip()
 
-    if index_type in {"endocrine_syndromes", "diseases"}:
+    if index_type == "diseases":
         # Supports both legacy EndocrineSyndrome and newer EndocrineDisease.
         name = (
             data.get("disease_name")
@@ -556,49 +563,6 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
             + (f"Experience formulas: {', '.join(exp_names)}\n" if exp_names else "")
         ).strip()
 
-    if index_type == "endocrine_plants":
-        plant = data.get("plant_name") or ""
-        other = data.get("other_names") or []
-        sci = data.get("scientific_name") or ""
-        desc = data.get("botanical_description") or ""
-        props = data.get("properties_and_dosage") or ""
-        apps = data.get("therapeutic_applications") or []
-
-        app_lines: list[str] = []
-        if isinstance(apps, list):
-            for a in apps:
-                if not isinstance(a, dict):
-                    continue
-                indication = a.get("indication") or ""
-                ingredients = a.get("ingredients") or ""
-                usage = a.get("usage_instructions") or ""
-                if indication or ingredients or usage:
-                    app_lines.append(
-                        " - "
-                        + " | ".join([
-                            f"Indication: {indication}" if indication else "",
-                            f"Ingredients: {ingredients}" if ingredients else "",
-                            f"Usage: {usage}" if usage else "",
-                        ]).strip(" |")
-                    )
-
-        return (
-            f"Endocrine plant: {plant}\n"
-            f"Other names: {', '.join(other) if isinstance(other, list) else other}\n"
-            f"Scientific name: {sci}\n"
-            f"Description: {desc}\n"
-            f"Properties/dosage: {props}\n"
-            f"Applications:\n" + ("\n".join(app_lines) if app_lines else "(none)")
-        ).strip()
-
-    if index_type == "herbs":
-        # Backward-compat: already handled above as herbs_plants/herbs.
-        return json.dumps(data, ensure_ascii=False)
-
-    if index_type == "diseases":
-        # Backward-compat: handled above as endocrine_syndromes/diseases.
-        return json.dumps(data, ensure_ascii=False)
-
     if index_type == "emergency":
         cond = data.get("condition_name") or ""
         signs = data.get("clinical_signs") or []
@@ -616,7 +580,7 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
 
 def ingest_jsonl_to_vector_store(
     *,
-    vector_store: MedicalVectorStore,
+    vector_store: "MedicalVectorStore",
     jsonl_path: str,
     schema: Type[BaseModel],
     index_type: str,

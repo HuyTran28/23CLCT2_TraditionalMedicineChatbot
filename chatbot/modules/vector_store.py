@@ -38,7 +38,7 @@ class MedicalVectorStore:
     def __init__(
         self,
         persist_dir: str = "./chroma_data",
-        embedding_model: str = "intfloat/multilingual-e5-small",
+        embedding_model: str = "BAAI/bge-m3",
         embed_batch_size: int = 8,
         device: Optional[str] = None,
         shard_size: int = 2048,
@@ -83,11 +83,12 @@ class MedicalVectorStore:
 
         if self.backend == "disk":
             # Disk-backed indices (SQLite + sharded .npy memmaps)
+            # Consolidated into 4 main categories for better routing and retrieval.
             index_types = [
-                "herbs_plants",
-                "herbs_vegetables",
-                "remedies",
-                "endocrine_syndromes",
+                "herbs",      # Plants, vegetables, and medicinal herbs
+                "diseases",   # Syndromes, medical conditions, and diseases
+                "remedies",   # Recipes and formulas
+                "emergency",  # Emergency protocols
             ]
             self._paths = {t: self._init_index_paths(t) for t in index_types}
             for idx in self._paths.values():

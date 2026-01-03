@@ -672,22 +672,100 @@ def split_cap_cuu_chong_doc(text: str) -> List[str]:
     text = _normalize_newlines(text)
     lines = text.split("\n")
 
-    starts: List[int] = []
+    # Entry headers in this source are inconsistent:
+    #   - Table of contents: number-only line, then ALL-CAPS title on next line
+    #       1.
+    #       RẮN CẮN
+    #   - Main body: number and title on the same line
+    #       1. RẮN CẮN
+    # The old splitter only handled the TOC pattern, which led to extracting trash.
+
+    header_num_only = re.compile(r"^\s*(?P<num>\d{1,3})\s*\.\s*$")
+    header_same_line = re.compile(
+        r"^\s*(?P<num>\d{1,3})\s*\.\s+(?P<title>.+?)\s*$",
+        re.UNICODE,
+    )
+
+    # Heuristic to reject TOC entries:
+    # real body sections quickly include lowercase Vietnamese (sentences, instructions),
+    # while TOC blocks are mostly ALL-CAPS titles and numbers.
+    _LOWER_VI_RE = re.compile(r"[a-zà-ỹ]", re.UNICODE)
+
+    def _looks_like_body_after(start_idx: int, *, window: int = 60) -> bool:
+        end = min(len(lines), start_idx + max(5, int(window)))
+        lower_hits = 0
+        for ln in lines[start_idx + 1 : end]:
+            s = (ln or "").strip()
+            if not s:
+                continue
+            if header_num_only.match(s):
+                continue
+            if _looks_like_all_caps_title(s):
+                continue
+            if "</break>" in s.lower():
+                continue
+            if _LOWER_VI_RE.search(s):
+                lower_hits += 1
+                if lower_hits >= 2:
+                    return True
+        return False
+
+    def _is_dense_numbered_list_behind(idx: int) -> bool:
+        """Detect TOC-like runs: many number-only headers in a short window."""
+        start = max(0, idx - 20)
+        count = 0
+        for k in range(start, idx):
+            if header_num_only.match(lines[k] or ""):
+                count += 1
+                if count >= 3:
+                    return True
+        return False
+
+    starts_same_line: List[int] = []
+    starts_num_then_title: List[int] = []
+
     i = 0
-    while i < len(lines) - 1:
-        if re.match(r"^\s*\d+\s*\.\s*$", lines[i]):
+    while i < len(lines):
+        ln = lines[i]
+        if ln is None:
+            i += 1
+            continue
+        # Pattern A: '1. RẮN CẮN' (main body)
+        m_same = header_same_line.match(ln)
+        if m_same:
+            title = (m_same.group("title") or "").strip()
+            if _looks_like_all_caps_title(title) and _looks_like_body_after(i, window=60):
+                starts_same_line.append(i)
+                i += 1
+                continue
+
+        # Pattern B: '1.' then next non-empty ALL-CAPS title (TOC or sometimes body)
+        if header_num_only.match(ln):
+            # Skip dense runs of numbering which are almost always TOC pages.
+            if _is_dense_numbered_list_behind(i):
+                i += 1
+                continue
             j = i + 1
-            while j < len(lines) and not lines[j].strip():
+            while j < len(lines) and not (lines[j] or "").strip():
                 j += 1
             if j < len(lines) and _looks_like_all_caps_title(lines[j]):
-                starts.append(i)
-                i = j
+                # For TOC entries, body text typically doesn't appear immediately.
+                if _looks_like_body_after(j, window=30):
+                    starts_num_then_title.append(i)
+                i = j + 1
+                continue
+
         i += 1
+
+    # Combine both header styles (Chapter 1 uses same-line, later chapters often use
+    # number-only line + title on next line).
+    starts = starts_same_line + starts_num_then_title
 
     chunks = _slice_by_starts(lines, starts)
 
-    # Remove TOC-like entries (they're extremely short).
-    return _filter_min_chars(chunks, min_chars=400)
+    # Remove TOC-like / low-signal chunks.
+    # Real condition/protocol sections are typically longer.
+    return _filter_min_chars(chunks, min_chars=300)
 
 
 # ---------------------------------------------------------------------------

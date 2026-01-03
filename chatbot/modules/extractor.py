@@ -66,6 +66,13 @@ def _get_retry_after_seconds(exc: BaseException) -> Optional[float]:
         return None
 
     if ra is None:
+        msg = str(exc) or ""
+        msg_low = msg.lower()
+        m = re.search(r"try again in\s+(?:(\d+)\s*m)?\s*([0-9]+(?:\.[0-9]+)?)\s*s", msg_low)
+        if m:
+            mins = float(m.group(1) or 0)
+            secs = float(m.group(2) or 0)
+            return mins * 60.0 + secs
         return None
     try:
         return float(str(ra).strip())

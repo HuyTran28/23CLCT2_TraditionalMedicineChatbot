@@ -266,22 +266,16 @@ class VietnameseEmbeddingRouterQueryEngine(BaseQueryEngine):
 
         # Small heuristic bias (Vietnamese) to avoid common mis-routing.
         ql = (query or "").lower()
-        boost_plants = 0.0
-        boost_vegetables = 0.0
+        boost_herbs = 0.0
 
-        # If user explicitly asks for a plant, prefer herbs_plants.
-        if "cây" in ql:
-            boost_plants += 0.03
-        # If user mentions edible/cooking, prefer herbs_vegetables.
-        if any(k in ql for k in ("rau", "ăn", "nấu", "luộc", "xào", "canh", "món")):
-            boost_vegetables += 0.04
+        # If user explicitly asks for a plant or vegetable, prefer herbs index.
+        if any(k in ql for k in ("cây", "rau", "ăn", "nấu", "luộc", "xào", "canh", "món")):
+            boost_herbs += 0.04
 
-        if boost_plants or boost_vegetables:
+        if boost_herbs:
             for i, r in enumerate(self._routes):
-                if r.index_type == "herbs_plants":
-                    scores[i] = float(scores[i]) + float(boost_plants)
-                elif r.index_type == "herbs_vegetables":
-                    scores[i] = float(scores[i]) + float(boost_vegetables)
+                if r.index_type == "herbs":
+                    scores[i] = float(scores[i]) + float(boost_herbs)
         order = np.argsort(scores)[::-1]
         ranked: List[Tuple[str, float]] = []
         for idx in order.tolist():
@@ -335,40 +329,12 @@ def build_router_query_engine(
     available = set(vector_store.available_compatible_index_types())
 
     engines: Dict[str, BaseQueryEngine] = {}
-    if "herbs_plants" in available:
-        engines["herbs_plants"] = MedicalStoreQueryEngine(
+    if "herbs" in available:
+        engines["herbs"] = MedicalStoreQueryEngine(
             vector_store=vector_store,
-            index_type="herbs_plants",
+            index_type="herbs",
             llm=llm,
             similarity_top_k=herbs_top_k,
-        )
-    if "herbs_vegetables" in available:
-        engines["herbs_vegetables"] = MedicalStoreQueryEngine(
-            vector_store=vector_store,
-            index_type="herbs_vegetables",
-            llm=llm,
-            similarity_top_k=herbs_top_k,
-        )
-    if "remedies" in available:
-        engines["remedies"] = MedicalStoreQueryEngine(
-            vector_store=vector_store,
-            index_type="remedies",
-            llm=llm,
-            similarity_top_k=herbs_top_k,
-        )
-    if "endocrine_syndromes" in available:
-        engines["endocrine_syndromes"] = MedicalStoreQueryEngine(
-            vector_store=vector_store,
-            index_type="endocrine_syndromes",
-            llm=llm,
-            similarity_top_k=diseases_top_k,
-        )
-    if "emergency" in available:
-        engines["emergency"] = MedicalStoreQueryEngine(
-            vector_store=vector_store,
-            index_type="emergency",
-            llm=llm,
-            similarity_top_k=emergency_top_k,
         )
     if "diseases" in available:
         engines["diseases"] = MedicalStoreQueryEngine(
@@ -377,46 +343,42 @@ def build_router_query_engine(
             llm=llm,
             similarity_top_k=diseases_top_k,
         )
-    if "herbs" in available:
-        engines["herbs"] = MedicalStoreQueryEngine(
+    if "remedies" in available:
+        engines["remedies"] = MedicalStoreQueryEngine(
             vector_store=vector_store,
-            index_type="herbs",
+            index_type="remedies",
             llm=llm,
             similarity_top_k=herbs_top_k,
+        )
+    if "emergency" in available:
+        engines["emergency"] = MedicalStoreQueryEngine(
+            vector_store=vector_store,
+            index_type="emergency",
+            llm=llm,
+            similarity_top_k=emergency_top_k,
         )
 
     # Vietnamese route descriptions; used only for local embedding-based routing.
     routes: List[_RouteSpec] = []
-    if "emergency" in engines:
+    if "herbs" in engines:
         routes.append(
             _RouteSpec(
-                index_type="emergency",
-                tool_name="cap_cuu_ngo_doc",
+                index_type="herbs",
+                tool_name="thao_duoc_cay_thuoc",
                 description_vi=(
-                    "Cấp cứu và ngộ độc: rắn cắn, say nắng, sốc, chảy máu, bỏng, "
-                    "hóa chất độc (paraquat), cách sơ cứu và xử trí khẩn cấp."
+                    "Thảo dược, cây thuốc, cây cảnh và rau làm thuốc: tên cây, đặc điểm thực vật, "
+                    "bộ phận dùng, công dụng, chỉ định (trị bệnh gì), cách dùng và lưu ý."
                 ),
             )
         )
-    if "herbs_plants" in engines:
+    if "diseases" in engines:
         routes.append(
             _RouteSpec(
-                index_type="herbs_plants",
-                tool_name="cay_thuoc_cay_canh",
+                index_type="diseases",
+                tool_name="benh_ly_hoi_chung",
                 description_vi=(
-                    "Cây thuốc/cây cảnh làm thuốc: tên cây, đặc điểm thực vật, bộ phận dùng, "
-                    "công dụng, chỉ định (trị bệnh gì), cách dùng và lưu ý."
-                ),
-            )
-        )
-    if "herbs_vegetables" in engines:
-        routes.append(
-            _RouteSpec(
-                index_type="herbs_vegetables",
-                tool_name="cay_rau_lam_thuoc",
-                description_vi=(
-                    "Cây rau làm thuốc: rau ăn được có tác dụng dược liệu, cách chế biến, "
-                    "công dụng và bài dùng đơn giản."
+                    "Bệnh lý, hội chứng và triệu chứng: các bệnh nội tiết, chuyển hóa, "
+                    "triệu chứng lâm sàng, nguyên nhân, nguyên tắc điều trị và hướng dùng thuốc."
                 ),
             )
         )
@@ -426,38 +388,19 @@ def build_router_query_engine(
                 index_type="remedies",
                 tool_name="bai_thuoc_cong_thuc",
                 description_vi=(
-                    "Bài thuốc/công thức: thành phần (vị thuốc), liều lượng, cách sắc/pha/chế biến, "
-                    "cách dùng, đối tượng và lưu ý."
+                    "Bài thuốc và công thức: thành phần (vị thuốc), liều lượng, cách sắc, "
+                    "cách pha chế, cách dùng, đối tượng sử dụng và các lưu ý khi dùng thuốc."
                 ),
             )
         )
-    if "diseases" in engines:
+    if "emergency" in engines:
         routes.append(
             _RouteSpec(
-                index_type="diseases",
-                tool_name="benh_chung",
+                index_type="emergency",
+                tool_name="cap_cuu_ngo_doc",
                 description_vi=(
-                    "Bệnh/chứng: triệu chứng, nguyên nhân, nguyên tắc điều trị, cách chăm sóc."
-                ),
-            )
-        )
-    if "endocrine_syndromes" in engines:
-        routes.append(
-            _RouteSpec(
-                index_type="endocrine_syndromes",
-                tool_name="hoi_chung_noi_tiet",
-                description_vi=(
-                    "Hội chứng/bệnh nội tiết: triệu chứng, nguyên tắc điều trị, hướng dùng thuốc theo YHCT."
-                ),
-            )
-        )
-    if "herbs" in engines:
-        routes.append(
-            _RouteSpec(
-                index_type="herbs",
-                tool_name="thao_duoc_chung",
-                description_vi=(
-                    "Dữ liệu thảo dược chung: vị thuốc, tính vị, quy kinh, công năng, chủ trị."
+                    "Cấp cứu và ngộ độc: xử trí khẩn cấp cho rắn cắn, say nắng, sốc, chảy máu, "
+                    "bỏng, ngộ độc hóa chất (paraquat) và các kỹ thuật sơ cứu cơ bản."
                 ),
             )
         )
