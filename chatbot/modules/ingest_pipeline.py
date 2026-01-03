@@ -3,13 +3,16 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Type
+from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Type, TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from modules.extractor import MedicalDataExtractor, RateLimitPauseRequired
-from modules.vector_store import MedicalVectorStore
 from modules.book_splitters import split_by_book
+
+if TYPE_CHECKING:
+    # Avoid importing embedding backends at module import time.
+    from modules.vector_store import MedicalVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,8 @@ _NESTED_IMAGE_RE = re.compile(
 )
 _GENERIC_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
 _BREAK_TAG_RE = re.compile(r"</?break\s*/?>", re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r"<!--[^>]*?-->")
+_PAGE_MARKER_RE = re.compile(r"^\s*#{1,6}\s*page\s*\d+\s*$", re.IGNORECASE)
 _HEADING_NUMBER_RE = re.compile(
     r"^(?P<prefix>\s*#{1,6}\s*)(?P<num>\(?\s*\d+\s*\)?)(?:\s*[\.)])?\s+",
     re.UNICODE,
@@ -44,6 +49,14 @@ def _sanitize_chunk_text_for_llm(text: str) -> str:
     for ln in lines:
         if not ln:
             out_lines.append(ln)
+            continue
+
+        # Drop PDF extraction HTML comments like: <!-- page=1 bbox=(...) -->
+        ln = _HTML_COMMENT_RE.sub(" ", ln)
+
+        # Drop standalone page markers: '## Page 11'
+        if _PAGE_MARKER_RE.match(ln):
+            out_lines.append("")
             continue
 
         # Drop standalone break tags anywhere in the line.
@@ -567,7 +580,7 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
 
 def ingest_jsonl_to_vector_store(
     *,
-    vector_store: MedicalVectorStore,
+    vector_store: "MedicalVectorStore",
     jsonl_path: str,
     schema: Type[BaseModel],
     index_type: str,
