@@ -152,9 +152,4 @@ def run_evaluation():
     print(f"\nĐã lưu báo cáo chi tiết vào: {output_file}")
 
 if __name__ == "__main__":
-    # Đảm bảo biến môi trường API Key đã có 
-    if "GROQ_API_KEY" not in os.environ:
-        # Điền key của bạn vào đây nếu chưa set trong Environment Variables
-        os.environ["GROQ_API_KEY"] = "gsk_..." 
-        
     run_evaluation()

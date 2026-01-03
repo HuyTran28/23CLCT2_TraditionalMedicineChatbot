@@ -51,7 +51,6 @@ class MedicalVectorStore:
         Args:
             persist_dir: Where to save ChromaDB data (survives restarts)
             embedding_model: HuggingFace model for embeddings
-            groq_api_key: For router LLM (defaults to GROQ_API_KEY)
         """
         self.persist_dir = Path(persist_dir)
         self.persist_dir.mkdir(parents=True, exist_ok=True)

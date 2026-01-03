@@ -6,20 +6,22 @@
 # from dotenv import load_dotenv
 # from bert_score import score
 
-# # --- IMPORT MODULES ---
-# try:
-#     from llama_index.llms.groq import Groq
-#     from modules.vector_store import MedicalVectorStore
-#     from modules.router_engine import build_router_query_engine
-# except ImportError as e:
-#     raise ImportError(f"Lỗi import: {e}. Hãy đảm bảo chạy script từ thư mục gốc dự án.")
+# # --- IMPORT MODULES (legacy) ---
+# # NOTE: This file is kept for reference; the current evaluation scripts use
+# # HuggingFace (local) or the remote Colab/ngrok LLM via LLM_API_BASE.
+# #
+# # try:
+# #     from modules.vector_store import MedicalVectorStore
+# #     from modules.router_engine import build_router_query_engine
+# # except ImportError as e:
+# #     raise ImportError(f"Lỗi import: {e}. Hãy đảm bảo chạy script từ thư mục gốc dự án.")
 
 # load_dotenv()
 
 # # --- CẤU HÌNH ---
 # CONFIG = {
 #     "persist_dir": "vector_data",
-#     "model": "llama-3.3-70b-versatile",
+#     "model": "Qwen/Qwen2.5-7B-Instruct",
 #     "embed_model": "BAAI/bge-m3",
 #     "device": "cpu",
 #     "backend": "disk",
@@ -70,10 +72,10 @@
 # class ProposedSystemWrapper:
 #     def __init__(self):
 #         print("--- Đang khởi tạo Proposed System... ---")
-#         api_key = os.getenv("GROQ_API_KEY")
-#         if not api_key: raise ValueError("Thiếu GROQ_API_KEY")
-        
-#         self.llm = Groq(api_key=api_key, model=CONFIG["model"], temperature=0.0)
+#         # Prefer remote if configured, otherwise local HF.
+#         # See chatbot/modules/remote_llm.py and env var LLM_API_BASE.
+#         # self.llm = RemoteLLM.from_env()  # remote
+#         # self.llm = HuggingFaceLLM(...)   # local
 #         self.vs = MedicalVectorStore(
 #             persist_dir=CONFIG["persist_dir"],
 #             embedding_model=CONFIG["embed_model"],
@@ -191,7 +193,6 @@ from bert_score import score
 
 # --- IMPORT MODULES ---
 try:
-    from llama_index.llms.groq import Groq
     from modules.vector_store import MedicalVectorStore
     from modules.router_engine import build_router_query_engine
 except ImportError as e:
@@ -202,7 +203,7 @@ load_dotenv()
 # --- CẤU HÌNH (QUAN TRỌNG: PHẢI KHỚP VỚI LỆNH INGEST) ---
 CONFIG = {
     "persist_dir": "vector_data",       # Nơi chứa Vector DB
-    "model": "llama-3.3-70b-versatile", # Model sinh câu trả lời
+    "model": "Qwen/Qwen2.5-7B-Instruct", # Model sinh câu trả lời (local HF only; ignored if using remote)
     "embed_model": "BAAI/bge-m3",       # <--- Phải khớp với model lúc Ingest
     "device": "cpu",
     "backend": "disk",
@@ -241,11 +242,26 @@ def load_test_dataset(filepath):
 class ProposedSystemWrapper:
     def __init__(self):
         print("--- Đang khởi tạo Proposed System... ---")
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key: raise ValueError("Thiếu GROQ_API_KEY")
-        
-        # Setup Model
-        self.llm = Groq(api_key=api_key, model=CONFIG["model"], temperature=0.0)
+
+        # Setup LLM: prefer remote if configured
+        api_base = (os.getenv("LLM_API_BASE") or "").strip()
+        if api_base:
+            from modules.remote_llm import RemoteLLM
+
+            self.llm = RemoteLLM.from_env()
+        else:
+            backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
+            hf_model_id = (os.getenv("HF_MODEL") or "").strip() or CONFIG["model"]
+            if backend != "hf" and not hf_model_id:
+                raise RuntimeError("Set LLM_API_BASE (remote) or HF_MODEL/LLM_BACKEND=hf (local) before running evaluation")
+
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from llama_index.llms.huggingface import HuggingFaceLLM
+            import torch
+
+            tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
+            model = AutoModelForCausalLM.from_pretrained(hf_model_id, device_map="cpu", torch_dtype=torch.float32)
+            self.llm = HuggingFaceLLM(model=model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=512)
         
         # Setup Vector Store (Quan trọng: Load đúng model BAAI)
         print(f"Loading Vector Store với embed model: {CONFIG['embed_model']}...")

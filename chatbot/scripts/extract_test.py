@@ -81,16 +81,7 @@ def run(args):
     if args.use_llm:
         from modules.extractor import MedicalDataExtractor
 
-        import os
-
-        backend = (os.getenv('EXTRACTOR_BACKEND') or os.getenv('LLM_BACKEND') or '').strip().lower()
-        using_hf = bool(backend == 'hf' or os.getenv('HF_MODEL'))
-
-        if not using_hf:
-            if not args.groq_key and not (Path('.env').exists() or 'GROQ_API_KEY' in os.environ):
-                raise RuntimeError('Groq API key not found. Set GROQ_API_KEY or pass --groq-key, or set HF_MODEL/LLM_BACKEND=hf for self-hosting')
-
-        extractor = MedicalDataExtractor(api_key=args.groq_key) if args.groq_key else MedicalDataExtractor()
+        extractor = MedicalDataExtractor()
 
         texts = [c['text'] for c in chunks]
         batch_results = extractor.extract_batch(texts, schema_cls, context_hint=args.context or "", requests_per_minute=args.rpm)
@@ -144,8 +135,9 @@ def run(args):
 
 
 def build_parser():
-    # Robust default paths relative to this script (chatbot/scripts/extract_test.py)
-    _root = Path(__file__).resolve().parent.parent.parent
+    # Default paths relative to this script (chatbot/scripts/extract_test.py)
+    # In this repo, the dataset lives under chatbot/data/.
+    _root = Path(__file__).resolve().parent.parent
     _default_out = _root / "data" / "processed" / "test_extracted.jsonl"
     _default_images = _root / "data" / "processed" / "images"
 
@@ -153,8 +145,7 @@ def build_parser():
     p.add_argument('--input', required=True, help='Markdown file or folder')
     p.add_argument('--schema', required=True, help='Pydantic schema name (e.g., MedicinalPlant)')
     p.add_argument('--sample', type=int, default=10, help='Number of chunks to sample')
-    p.add_argument('--use-llm', action='store_true', help='Use real Groq extractor (requires GROQ_API_KEY)')
-    p.add_argument('--groq-key', default=None, help='Optional Groq key to pass (overrides env)')
+    p.add_argument('--use-llm', action='store_true', help='Use real HF extractor (requires HF_MODEL or local model availability)')
     p.add_argument('--rpm', type=float, default=2.0, help='Rate limit (requests per minute)')
     p.add_argument('--out', default=str(_default_out), help='Output JSONL')
     p.add_argument('--context', default='', help='Context hint for the extractor')

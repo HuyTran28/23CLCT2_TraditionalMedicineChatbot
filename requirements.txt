@@ -1,12 +1,12 @@
 ﻿pydantic==2.12.5
 llama-index
-llama-index-llms-groq
 llama-index-llms-huggingface
 llama-index-embeddings-huggingface
 python-dotenv
 pillow>=10.0.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
+requests>=2.31.0
 
 llama-index-readers-file
 transformers>=4.56.1
@@ -16,7 +16,6 @@ torch==2.6.0
 datasets
 ragas
 langchain
-langchain-groq
 langchain-community
 
 # Pins to avoid conflicts with other installed packages
@@ -26,4 +25,3 @@ tenacity>=8.1.0,<9.0.0
 llama-index-core
 huggingface-hub
 pandas
-groq

@@ -16,7 +16,7 @@ from llama_index.core import (
 )
 from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.groq import Groq
+
 
 class NaiveMedicalRAG:
     def __init__(self, file_paths, persist_dir="./baseline_storage"):
@@ -26,10 +26,9 @@ class NaiveMedicalRAG:
         - Chunking: Hierarchical/Structural (MarkdownNodeParser)
         """
         self.persist_dir = persist_dir
-        
-        # Ensure required env var exists
-        if not os.environ.get("GROQ_API_KEY"):
-            raise ValueError("Chưa thiết lập biến môi trường GROQ_API_KEY")
+
+        # LLM (HuggingFace self-hosted). Baseline scripts are optional and may be slow on CPU.
+        hf_model_id = (os.getenv("HF_MODEL") or "Qwen/Qwen2.5-7B-Instruct").strip()
 
         # --- CẤU HÌNH CHO CPU ---
         print("--- Đang load model BAAI/bge-m3 (CPU Mode)... ---")
@@ -41,7 +40,22 @@ class NaiveMedicalRAG:
             embed_batch_size=10 
         )
         
-        self.llm = Groq(model="llama-3.1-8b-instant")
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            from llama_index.llms.huggingface import HuggingFaceLLM
+            import torch
+        except Exception as e:
+            raise RuntimeError(
+                "Baseline requires transformers + llama-index-llms-huggingface."
+            ) from e
+
+        tokenizer = AutoTokenizer.from_pretrained(hf_model_id)
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            hf_model_id,
+            device_map="cpu",
+            torch_dtype=torch.float32,
+        )
+        self.llm = HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=512)
         
         # Setup Global Settings
         Settings.llm = self.llm

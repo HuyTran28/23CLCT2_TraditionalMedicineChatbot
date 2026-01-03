@@ -226,7 +226,7 @@ def extract_chunks_to_jsonl(
                     context_hint=f"source={Path(ch.source_path).name} chunk={ch.chunk_index}",
                 )
 
-                # Throttle between requests (best-effort). Groq client may also retry on 429.
+                # Throttle between requests (best-effort) to avoid overloading the model.
                 if requests_per_minute and requests_per_minute > 0:
                     import time
 
@@ -255,10 +255,6 @@ def extract_chunks_to_jsonl(
                 n_ok += 1
                 existing_ids.add(rid)
             except Exception as e:
-                # If Groq asks for a long wait (e.g., tokens/day exhausted), stop early.
-                if isinstance(e, RateLimitPauseRequired):
-                    raise
-
                 rec = {
                     "error": str(e),
                     "meta": {

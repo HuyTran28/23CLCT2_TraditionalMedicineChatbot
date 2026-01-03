@@ -29,11 +29,17 @@ BACKEND = os.getenv("BACKEND", "disk")
 
 
 def _get_llm():
+    api_base = (os.getenv("LLM_API_BASE") or "").strip()
+    if api_base:
+        from modules.remote_llm import RemoteLLM
+
+        return RemoteLLM.from_env()
+
     backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
     hf_model_id = (os.getenv("HF_MODEL") or "").strip()
 
     if backend == "hf" or hf_model_id:
-        model_id = hf_model_id or os.getenv("GROQ_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+        model_id = hf_model_id or "Qwen/Qwen2.5-7B-Instruct"
         try:
             from transformers import AutoTokenizer, AutoModelForCausalLM
         except Exception as e:
@@ -57,12 +63,10 @@ def _get_llm():
         hf_model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, torch_dtype=torch_dtype)
         return HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=1024)
 
-    from llama_index.llms.groq import Groq
-
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY not set (or set HF_MODEL/LLM_BACKEND=hf for self-hosting)")
-    return Groq(api_key=api_key, model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"), temperature=0.0, max_tokens=1024)
+    raise RuntimeError(
+        "LLM is not configured. Set LLM_API_BASE (remote Colab/ngrok) "
+        "or set HF_MODEL/LLM_BACKEND=hf for local self-hosting."
+    )
 
 
 # Build once
@@ -79,7 +83,7 @@ _LLM_INIT_ERROR: str | None = None
 try:
     _LLM = _get_llm()
 except Exception:
-    # allow local use without GROQ for diagnostics; queries that require LLM will error later
+    # allow local use without an LLM for diagnostics; LLM-requiring queries will error later
     _LLM = None
     try:
         import traceback
@@ -381,8 +385,8 @@ def query_internal(question: str, include_images: bool = True, verbose: bool = F
         except Exception as e:
             hint = (
                 "LLM chưa sẵn sàng. Hãy cấu hình một trong các cách sau:\n"
+                "- Remote (Colab/ngrok): set env LLM_API_BASE (và tùy chọn LLM_API_KEY)\n"
                 "- Self-host: set env LLM_BACKEND=hf và HF_MODEL=<model_id>\n"
-                "- Groq API: set env GROQ_API_KEY\n"
             )
             detail = str(e)
             raise RuntimeError(hint + ("\nChi tiết: " + detail if detail else ""))

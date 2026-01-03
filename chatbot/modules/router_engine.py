@@ -94,8 +94,8 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
         query_s = self._coerce_query_text(query)
         if self._llm is None or not hasattr(self._llm, "complete"):
             raise RuntimeError(
-                "LLM chưa được cấu hình cho query. Hãy set HF_MODEL/LLM_BACKEND=hf (self-host) "
-                "hoặc GROQ_API_KEY (Groq API) trước khi query."
+                "LLM chưa được cấu hình cho query. Hãy set LLM_API_BASE (remote Colab/ngrok) "
+                "hoặc HF_MODEL/LLM_BACKEND=hf (self-host local) trước khi query."
             )
         sys = (
             self._system_prompt

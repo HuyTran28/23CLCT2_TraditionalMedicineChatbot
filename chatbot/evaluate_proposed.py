@@ -4,14 +4,12 @@ import re
 import pandas as pd
 from datasets import Dataset 
 from ragas import evaluate, RunConfig 
-from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 # --- IMPORT MODULE TỪ PROPOSED MODEL ---
 
 from modules.vector_store import MedicalVectorStore
 from modules.router_engine import build_router_query_engine, MedicalStoreQueryEngine 
-from llama_index.llms.groq import Groq as LlamaIndexGroq 
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.core.base.response.schema import Response
 from ragas.metrics import (
@@ -86,15 +84,8 @@ print(">>> [Patch] Đang vá lỗi MedicalStoreQueryEngine...")
 MedicalStoreQueryEngine._query = patched_query
 
 # ==============================================================================
-# --- PHẦN 2: FIX LỖI API GROQ (n=1) ---
-class ChatGroqFixed(ChatGroq):
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        if 'n' in kwargs: kwargs['n'] = 1
-        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-
+# --- PHẦN 2: CẤU HÌNH LLM ĐÁNH GIÁ (HF/remote) ---
 # --- CẤU HÌNH ---
-if not os.environ.get("GROQ_API_KEY"):
-    os.environ["GROQ_API_KEY"] = "YOUR_KEY_HERE"
 
 # Sửa lại cho khớp với model lúc Ingest (BAAI/bge-m3)
 PROPOSED_EMBED_MODEL = "BAAI/bge-m3" 
@@ -109,7 +100,28 @@ eval_embeddings = HuggingFaceEmbeddings(
 )
 
 # Setup Judge LLM
-judge_llm = ChatGroqFixed(model="llama-3.3-70b-versatile", temperature=0)
+def _build_judge_llm():
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+        from langchain_community.llms import HuggingFacePipeline
+        import torch
+    except Exception as e:
+        raise RuntimeError("Judge LLM requires transformers + langchain-community") from e
+
+    model_id = (os.getenv("JUDGE_HF_MODEL") or os.getenv("HF_MODEL") or "Qwen/Qwen2.5-0.5B-Instruct").strip()
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(model_id, device_map="cpu", torch_dtype=torch.float32)
+    gen = pipeline(
+        task="text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        max_new_tokens=256,
+        do_sample=False,
+    )
+    return HuggingFacePipeline(pipeline=gen)
+
+
+judge_llm = _build_judge_llm()
 
 # Dữ liệu test
 TEST_DATA = [
@@ -121,7 +133,29 @@ TEST_DATA = [
 
 def setup_proposed_system():
     print(f"--- Đang khởi động Proposed Model ---")
-    llm = LlamaIndexGroq(model="llama-3.3-70b-versatile", api_key=os.environ["GROQ_API_KEY"])
+    # Answer LLM: prefer remote Colab/ngrok if configured.
+    api_base = (os.getenv("LLM_API_BASE") or "").strip()
+    if api_base:
+        from modules.remote_llm import RemoteLLM
+
+        llm = RemoteLLM.from_env()
+    else:
+        backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
+        hf_model_id = (os.getenv("HF_MODEL") or "").strip()
+        if backend != "hf" and not hf_model_id:
+            raise RuntimeError("Set LLM_API_BASE (remote) or HF_MODEL/LLM_BACKEND=hf (local) before running evaluation")
+
+        try:
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            from llama_index.llms.huggingface import HuggingFaceLLM
+            import torch
+        except Exception as e:
+            raise RuntimeError("Local HF answering requires transformers + llama-index-llms-huggingface") from e
+
+        model_id = hf_model_id or "Qwen/Qwen2.5-7B-Instruct"
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        hf_model = AutoModelForCausalLM.from_pretrained(model_id, device_map="cpu", torch_dtype=torch.float32)
+        llm = HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=512)
     
     vs = MedicalVectorStore(
         persist_dir=VECTOR_DB_DIR,

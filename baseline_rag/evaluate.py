@@ -5,7 +5,6 @@ from pathlib import Path
 import pandas as pd
 from datasets import Dataset 
 from ragas import evaluate
-from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from naive_rag import NaiveMedicalRAG
 
@@ -15,19 +14,39 @@ from ragas.metrics import (
     context_recall, 
     answer_correctness
 )
-# --- FIX LỖI GROQ n=1 ---
-class ChatGroqFixed(ChatGroq):
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        if 'n' in kwargs: kwargs['n'] = 1
-        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 # --- CẤU HÌNH ---
 # Danh sách file Markdown đầu vào (moved to chatbot/data/raw)
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
-if not os.environ.get("GROQ_API_KEY"):
-    os.environ["GROQ_API_KEY"] = "YOUR_KEY_HERE"
 
-judge_llm = ChatGroqFixed(model="llama-3.3-70b-versatile", temperature=0)
+
+def _build_judge_llm():
+    """RAGAS judge model.
+
+    Uses a local HuggingFace pipeline to avoid external API dependencies.
+    """
+
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+        from langchain_community.llms import HuggingFacePipeline
+        import torch
+    except Exception as e:
+        raise RuntimeError("Judge LLM requires transformers + langchain-community") from e
+
+    model_id = (os.getenv("JUDGE_HF_MODEL") or os.getenv("HF_MODEL") or "Qwen/Qwen2.5-0.5B-Instruct").strip()
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(model_id, device_map="cpu", torch_dtype=torch.float32)
+    gen = pipeline(
+        task="text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        max_new_tokens=256,
+        do_sample=False,
+    )
+    return HuggingFacePipeline(pipeline=gen)
+
+
+judge_llm = _build_judge_llm()
 
 # Chạy Embedding trên CPU
 print(">>> Đang load model Embedding...")

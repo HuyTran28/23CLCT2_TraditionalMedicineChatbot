@@ -18,8 +18,9 @@ def _get_schema_by_name(name: str):
     return getattr(medical_schemas, name)
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    # Robust default paths relative to this script (chatbot/main.py)
-    _root = Path(__file__).resolve().parent.parent
+    # Default paths relative to this script (chatbot/main.py)
+    # In this repo, the dataset lives under chatbot/data/.
+    _root = Path(__file__).resolve().parent
     _default_input = _root / "data" / "raw"
     _default_jsonl = _root / "data" / "processed" / "extracted.jsonl"
     _default_images = _root / "data" / "processed" / "images"
@@ -55,13 +56,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--backend", default="disk", choices=["disk", "chroma"], help="Vector store backend: disk (portable) or chroma (Colab/Linux)")
     ingest.add_argument("--shard-size", type=int, default=2048, help="Disk-backend shard rows (only for backend=disk)")
     ingest.add_argument("--chroma-prefix", default="traditional_medicine", help="Chroma collection prefix (only for backend=chroma)")
-    ingest.add_argument("--extract", action="store_true", help="Run LLM extraction step (uses GROQ)")
+    ingest.add_argument("--extract", action="store_true", help="Run LLM extraction step (runs locally where you execute this command)")
     ingest.add_argument(
         "--model",
-        default=os.getenv("HF_MODEL") or "llama-3.1-8b-instant",
+        default=os.getenv("HF_MODEL") or "Qwen/Qwen2.5-7B-Instruct",
         help=(
-            "LLM model for extraction. If HF_MODEL/LLM_BACKEND=hf is set, this is a HuggingFace model id/path; "
-            "otherwise it's a Groq model name."
+            "LLM model for extraction (HuggingFace model id/path). Use HF_MODEL to override."
         ),
     )
     ingest.add_argument(
@@ -74,7 +74,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--max-retry-after-seconds",
         type=float,
         default=120.0,
-        help="Fail fast if Groq asks to wait longer than this (often TPD exhaustion)",
+        help="Max allowed backoff seconds before failing (used only by some backends)",
     )
     ingest.add_argument(
         "--resume",
@@ -105,10 +105,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     query.add_argument("--question", required=True, help="User question")
     query.add_argument(
         "--model",
-        default=os.getenv("HF_MODEL") or "llama-3.3-70b-versatile",
+        default=os.getenv("HF_MODEL") or "Qwen/Qwen2.5-7B-Instruct",
         help=(
-            "LLM model for routing + answering. If HF_MODEL/LLM_BACKEND=hf is set, this is a HuggingFace model id/path; "
-            "otherwise it's a Groq model name."
+            "LLM model for answering when running locally (HF_MODEL/LLM_BACKEND=hf). "
+            "If using remote, set LLM_API_BASE and this flag is ignored."
         ),
     )
     query.add_argument("--herbs-top-k", type=int, default=3, help="Top-k retrieval for herbs")
@@ -182,40 +182,43 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 def cmd_query(args: argparse.Namespace) -> None:
     from modules.router_engine import build_router_query_engine
 
-    backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
-    hf_model_id = (os.getenv("HF_MODEL") or "").strip()
+    api_base = (os.getenv("LLM_API_BASE") or "").strip()
+    if api_base:
+        from modules.remote_llm import RemoteLLM
 
-    if backend == "hf" or hf_model_id:
-        try:
-            from transformers import AutoTokenizer, AutoModelForCausalLM
-        except Exception as e:
-            raise RuntimeError("Self-hosted (HF) backend requires transformers to be installed") from e
-
-        try:
-            from llama_index.llms.huggingface import HuggingFaceLLM
-        except Exception as e:
-            raise RuntimeError("Self-hosted (HF) backend requires llama-index-llms-huggingface") from e
-
-        model_id = hf_model_id or args.model
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
-        import os
-        import torch
-
-        force_cpu = (os.getenv("FORCE_CPU") or "").strip().lower() in {"1", "true", "yes", "y"}
-        device_map = (os.getenv("HF_DEVICE_MAP") or "").strip() or None
-        if device_map is None:
-            device_map = "cpu" if (force_cpu or os.name == "nt") else "auto"
-        torch_dtype = "auto" if device_map != "cpu" else torch.float32
-
-        hf_model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, torch_dtype=torch_dtype)
-        llm = HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=1024)
+        llm = RemoteLLM.from_env()
     else:
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("query requires GROQ_API_KEY, or set HF_MODEL/LLM_BACKEND=hf for self-hosting")
-        from llama_index.llms.groq import Groq
+        backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
+        hf_model_id = (os.getenv("HF_MODEL") or "").strip()
 
-        llm = Groq(api_key=api_key, model=args.model, temperature=0.0, max_tokens=1024)
+        if backend == "hf" or hf_model_id:
+            try:
+                from transformers import AutoTokenizer, AutoModelForCausalLM
+            except Exception as e:
+                raise RuntimeError("Self-hosted (HF) backend requires transformers to be installed") from e
+
+            try:
+                from llama_index.llms.huggingface import HuggingFaceLLM
+            except Exception as e:
+                raise RuntimeError("Self-hosted (HF) backend requires llama-index-llms-huggingface") from e
+
+            model_id = hf_model_id or args.model
+            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            import torch
+
+            force_cpu = (os.getenv("FORCE_CPU") or "").strip().lower() in {"1", "true", "yes", "y"}
+            device_map = (os.getenv("HF_DEVICE_MAP") or "").strip() or None
+            if device_map is None:
+                device_map = "cpu" if (force_cpu or os.name == "nt") else "auto"
+            torch_dtype = "auto" if device_map != "cpu" else torch.float32
+
+            hf_model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, torch_dtype=torch_dtype)
+            llm = HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=1024)
+        else:
+            raise ValueError(
+                "query requires an LLM. Set LLM_API_BASE (remote Colab/ngrok) "
+                "or set HF_MODEL/LLM_BACKEND=hf for local self-hosting."
+            )
 
     vs = MedicalVectorStore(
         persist_dir=args.persist_dir,
