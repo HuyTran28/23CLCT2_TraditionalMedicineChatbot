@@ -23,8 +23,8 @@ DATA_FILES = [
     str(ROOT_DIR / "data" / "raw" / "cay-rau-lam-thuoc" / "cay-rau-lam-thuoc.md")
 ]
 
-# Tên file câu hỏi test (đặt cùng thư mục với script này)
-TEST_FILE_NAME = "test_set-2.csv"
+# Tên file câu hỏi test
+TEST_FILE_NAME = "test.csv"
 
 # --- CÁC HÀM HỖ TRỢ ---
 def clean_response(text):

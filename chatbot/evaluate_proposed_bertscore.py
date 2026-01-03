@@ -206,7 +206,8 @@ CONFIG = {
     "embed_model": "BAAI/bge-m3",       # <--- Phải khớp với model lúc Ingest
     "device": "cpu",
     "backend": "disk",
-    "test_file": "test_set-2.csv"
+    # Use an absolute path relative to repository root (robust when running from project root)
+    "test_file": str(Path(__file__).resolve().parent.parent / "baseline_rag" / "test.csv")
 }
 
 # --- HÀM LÀM SẠCH ---

@@ -26,3 +26,4 @@ llama-index-core
 huggingface-hub
 pandas
 groq
+bert-score
