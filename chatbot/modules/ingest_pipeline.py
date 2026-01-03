@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Type, TYPE_CH
 
 from pydantic import BaseModel
 
-from modules.extractor import MedicalDataExtractor, RateLimitPauseRequired
+from modules.extractor import MedicalDataExtractor
 from modules.book_splitters import split_by_book
 
 if TYPE_CHECKING:

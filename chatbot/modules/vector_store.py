@@ -1,9 +1,11 @@
 import hashlib
 import json
 import logging
+import os
 import sqlite3
 import base64
 import mimetypes
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Literal
@@ -44,6 +46,8 @@ class MedicalVectorStore:
         shard_size: int = 2048,
         backend: Literal["disk", "chroma"] = "disk",
         chroma_collection_prefix: str = "traditional_medicine",
+        embed_query_prefix: Optional[str] = None,
+        embed_text_prefix: Optional[str] = None,
     ):
         """
         Initialize vector store with ChromaDB backend.
@@ -66,12 +70,30 @@ class MedicalVectorStore:
         logger.info(f"✓ Embedding device: {self.device}")
 
         self.embedding_model_name = str(embedding_model)
+
+        # Optional embedding instructions/prefixes.
+        # For many BGE retrieval models, using query/passsage prefixes improves alignment.
+        # Keep defaults empty to avoid silently changing behavior for existing indices.
+        env_qp = (os.getenv("EMBED_QUERY_PREFIX") or "").strip()
+        env_tp = (os.getenv("EMBED_TEXT_PREFIX") or "").strip()
+        self.embed_query_prefix = (
+            (embed_query_prefix if embed_query_prefix is not None else env_qp) or ""
+        )
+        self.embed_text_prefix = (
+            (embed_text_prefix if embed_text_prefix is not None else env_tp) or ""
+        )
+
         self._embedder = HuggingFaceEmbedding(
             model_name=self.embedding_model_name,
             device=self.device,
             embed_batch_size=self.embed_batch_size,
         )
         logger.info(f"✓ Initialized embeddings (LlamaIndex): {self.embedding_model_name}")
+        if self.embed_query_prefix or self.embed_text_prefix:
+            logger.info(
+                "✓ Embedding prefixes enabled: "
+                f"query_prefix='{self.embed_query_prefix}' text_prefix='{self.embed_text_prefix}'"
+            )
 
         self._expected_embedding_dim: Optional[int] = None
 
@@ -143,6 +165,8 @@ class MedicalVectorStore:
                 state["dim"] = int(embeddings.shape[1])
                 dim = state["dim"]
                 state["embedding_model"] = self.embedding_model_name
+                state["embed_query_prefix"] = self.embed_query_prefix
+                state["embed_text_prefix"] = self.embed_text_prefix
                 self._write_state(idx.state_path, state)
             if int(dim) != int(embeddings.shape[1]):
                 raise ValueError(f"Embedding dim mismatch: index has {dim}, got {embeddings.shape[1]}")
@@ -151,6 +175,8 @@ class MedicalVectorStore:
             em = state.get("embedding_model")
             if not em:
                 state["embedding_model"] = self.embedding_model_name
+                state["embed_query_prefix"] = self.embed_query_prefix
+                state["embed_text_prefix"] = self.embed_text_prefix
                 self._write_state(idx.state_path, state)
             elif str(em) != str(self.embedding_model_name):
                 raise ValueError(
@@ -163,11 +189,39 @@ class MedicalVectorStore:
                     + "'. Re-ingest the index or use the same --embed-model."
                 )
 
+            # Ensure prefix/instruction config matches between ingest & query.
+            if (state.get("embed_query_prefix") or "") != self.embed_query_prefix or (state.get("embed_text_prefix") or "") != self.embed_text_prefix:
+                raise ValueError(
+                    "Embedding prefix config mismatch for index '"
+                    + str(index_type)
+                    + "'. Index was built with embed_query_prefix='"
+                    + str(state.get("embed_query_prefix") or "")
+                    + "', embed_text_prefix='"
+                    + str(state.get("embed_text_prefix") or "")
+                    + "' but current config is embed_query_prefix='"
+                    + str(self.embed_query_prefix)
+                    + "', embed_text_prefix='"
+                    + str(self.embed_text_prefix)
+                    + "'.\nFix: re-ingest the index after setting EMBED_QUERY_PREFIX/EMBED_TEXT_PREFIX consistently."
+                )
+
             conn = self._sqlite_conn(idx.sqlite_path)
             try:
                 for i in range(len(texts)):
                     meta = self._maybe_store_images_in_sqlite(conn, metadatas[i])
-                    shard, offset = self._append_embedding(idx.root, idx.state_path, embeddings[i])
+
+                    # IMPORTANT: avoid creating orphan embeddings on re-ingest.
+                    # If a doc id already exists, reuse its shard/offset and overwrite the embedding in-place.
+                    existing = conn.execute(
+                        "SELECT shard, offset FROM docs WHERE id=?",
+                        (ids[i],),
+                    ).fetchone()
+                    if existing:
+                        shard, offset = int(existing[0]), int(existing[1])
+                        self._write_embedding_at(idx.root, shard, offset, int(dim), embeddings[i])
+                    else:
+                        shard, offset = self._append_embedding(idx.root, idx.state_path, embeddings[i])
+
                     conn.execute(
                         "INSERT OR REPLACE INTO docs(id, text, metadata_json, shard, offset) VALUES (?, ?, ?, ?, ?)",
                         (ids[i], texts[i], json.dumps(meta, ensure_ascii=False), int(shard), int(offset)),
@@ -236,6 +290,29 @@ class MedicalVectorStore:
         if not dim:
             return []
 
+        # Ensure prefix/instruction config matches index.
+        if (state.get("embed_query_prefix") or "") != self.embed_query_prefix or (state.get("embed_text_prefix") or "") != self.embed_text_prefix:
+            raise ValueError(
+                "Embedding prefix config mismatch for index '"
+                + str(index_type)
+                + "'. Index embed_query_prefix='"
+                + str(state.get("embed_query_prefix") or "")
+                + "', embed_text_prefix='"
+                + str(state.get("embed_text_prefix") or "")
+                + "' but current config is embed_query_prefix='"
+                + str(self.embed_query_prefix)
+                + "', embed_text_prefix='"
+                + str(self.embed_text_prefix)
+                + "'.\nFix: set EMBED_QUERY_PREFIX/EMBED_TEXT_PREFIX to match, or re-ingest."
+            )
+
+        # state['shard'] is the current shard index being written to.
+        # state['offset'] is the next write position within that shard (i.e. number of valid rows in current shard).
+        cur_shard = int(state.get("shard") or 0)
+        cur_offset = int(state.get("offset") or 0)
+        if cur_shard == 0 and cur_offset <= 0:
+            return []
+
         q = np.asarray(self._embed_query(query_text), dtype=np.float32)
         if q.ndim != 1:
             q = q.reshape(-1)
@@ -259,21 +336,56 @@ class MedicalVectorStore:
             )
 
         candidates: List[Tuple[float, int, int]] = []  # (score, shard, offset)
-        for shard_path in sorted(idx.root.glob("embeddings_*.npy")):
+
+        # Brute-force scan across all embedding shards (disk backend).
+        # This can be CPU-heavy for large indices; optionally emit progress.
+        progress = os.getenv("VECTORSTORE_PROGRESS", "").strip().lower() in {"1", "true", "yes", "on"}
+        shard_paths = sorted(idx.root.glob("embeddings_*.npy"))
+        t0 = time.perf_counter()
+        if progress:
+            logger.info(
+                f"[vector_store] scanning {len(shard_paths)} shard(s) for index_type='{index_type}' (top_k={int(top_k)})"
+            )
+
+        # Oversample candidates to handle holes (missing shard/offset rows) gracefully.
+        cand_mult = int(os.getenv("VECTORSTORE_CANDIDATE_MULT") or "10")
+        cand_mult = max(1, cand_mult)
+
+        for i, shard_path in enumerate(shard_paths, start=1):
             shard_idx = int(shard_path.stem.split("_")[-1])
             emb = np.load(shard_path, mmap_mode="r")
             if emb.ndim != 2 or emb.shape[1] != int(dim):
                 continue
-            scores = emb @ q
-            k = min(int(top_k), int(scores.shape[0]))
+
+            # IMPORTANT: shard files are preallocated to shard_size.
+            # Unused rows remain zeros and must be excluded, otherwise top-k can hit empty offsets.
+            if shard_idx > cur_shard:
+                continue
+            max_rows = int(emb.shape[0])
+            if shard_idx == cur_shard:
+                max_rows = min(max_rows, max(0, int(cur_offset)))
+            if max_rows <= 0:
+                continue
+
+            if progress and (i == 1 or i == len(shard_paths) or i % 5 == 0):
+                dt = time.perf_counter() - t0
+                logger.info(
+                    f"[vector_store] shard {i}/{len(shard_paths)}: {shard_path.name} rows={max_rows} elapsed={dt:.1f}s"
+                )
+
+            scores = emb[:max_rows, :] @ q
+            k = min(int(top_k) * cand_mult, int(scores.shape[0]))
             if k <= 0:
                 continue
             top_idx = np.argpartition(scores, -k)[-k:]
             for off in top_idx.tolist():
                 candidates.append((float(scores[off]), shard_idx, int(off)))
 
+        if progress:
+            dt = time.perf_counter() - t0
+            logger.info(f"[vector_store] scan done in {dt:.2f}s; candidates={len(candidates)}")
+
         candidates.sort(key=lambda x: x[0], reverse=True)
-        candidates = candidates[: int(top_k)]
 
         out: List[Dict[str, Any]] = []
         conn = self._sqlite_conn(idx.sqlite_path)
@@ -293,6 +405,8 @@ class MedicalVectorStore:
                         "score": score,
                     }
                 )
+                if len(out) >= int(top_k):
+                    break
         finally:
             try:
                 conn.close()
@@ -562,6 +676,16 @@ class MedicalVectorStore:
         np.lib.format.open_memmap(p, mode="w+", dtype=np.float32, shape=(self.shard_size, int(dim)))
         return p
 
+    def _write_embedding_at(self, root: Path, shard_idx: int, offset: int, dim: int, emb: np.ndarray) -> None:
+        shard_path = self._ensure_shard_file(root, int(shard_idx), int(dim))
+        mm = np.load(shard_path, mmap_mode="r+")
+        if mm.ndim != 2 or int(mm.shape[1]) != int(dim):
+            raise ValueError(f"Embedding shard dim mismatch at {shard_path}: expected {dim}, got {mm.shape}")
+        if int(offset) < 0 or int(offset) >= int(mm.shape[0]):
+            raise IndexError(f"Embedding offset out of range for {shard_path}: offset={offset}")
+        mm[int(offset), :] = emb.astype(np.float32, copy=False)
+        mm.flush()
+
     def _append_embedding(self, root: Path, state_path: Path, emb: np.ndarray) -> Tuple[int, int]:
         state = self._read_state(state_path)
         dim = int(state["dim"])
@@ -596,6 +720,9 @@ class MedicalVectorStore:
         if not texts:
             return []
 
+        if self.embed_text_prefix:
+            texts = [self.embed_text_prefix + t for t in texts]
+
         all_embeddings: List[List[float]] = []
         bs = self.embed_batch_size
         for i in range(0, len(texts), bs):
@@ -608,7 +735,8 @@ class MedicalVectorStore:
         return all_embeddings
 
     def _embed_query(self, query_text: str) -> List[float]:
-        e = self._embedder.get_query_embedding(query_text)
+        qt = (self.embed_query_prefix + query_text) if self.embed_query_prefix else query_text
+        e = self._embedder.get_query_embedding(qt)
         v = np.asarray(e, dtype=np.float32)
         v = self._l2_normalize(v)
         return v.tolist()

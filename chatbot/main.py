@@ -2,6 +2,11 @@ import argparse
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# Load env vars from chatbot/.env (for LLM_API_BASE, LLM_API_KEY, etc.)
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 from modules.extractor import MedicalDataExtractor
 from modules.ingest_pipeline import (
     iter_markdown_files,
@@ -47,13 +52,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ],
         help="Vector index bucket",
     )
-    ingest.add_argument("--persist-dir", default="./chroma_data", help="Chroma persistence directory")
+    ingest.add_argument("--persist-dir", default="./chroma_data", help="Persistence directory for the selected backend")
     ingest.add_argument("--jsonl-out", default=str(_default_jsonl), help="Extraction cache JSONL")
     ingest.add_argument("--embed-model", default="BAAI/bge-m3", help="HF embedding model")
     ingest.add_argument("--embed-batch", type=int, default=8, help="Embedding batch size (lower uses less RAM)")
     ingest.add_argument("--device", default="cpu", choices=["cpu", "cuda"], help="Embedding device. Use cpu to avoid GPU VRAM.")
     ingest.add_argument("--ingest-batch", type=int, default=16, help="Vector-store insert batch size")
-    ingest.add_argument("--backend", default="disk", choices=["disk", "chroma"], help="Vector store backend: disk (portable) or chroma (Colab/Linux)")
+    ingest.add_argument(
+        "--backend",
+        "--store",
+        dest="backend",
+        default="disk",
+        choices=["disk", "chroma"],
+        help="Vector store backend (alias: --store): disk (portable) or chroma (Colab/Linux)",
+    )
     ingest.add_argument("--shard-size", type=int, default=2048, help="Disk-backend shard rows (only for backend=disk)")
     ingest.add_argument("--chroma-prefix", default="traditional_medicine", help="Chroma collection prefix (only for backend=chroma)")
     ingest.add_argument("--extract", action="store_true", help="Run LLM extraction step (runs locally where you execute this command)")
@@ -96,7 +108,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     query = sub.add_parser("query", help="Ask a question; router selects the right index")
     query.add_argument("--persist-dir", default="vector_data", help="Vector index directory (disk backend default)")
-    query.add_argument("--backend", default="disk", choices=["disk", "chroma"], help="Vector store backend")
+    query.add_argument(
+        "--backend",
+        "--store",
+        dest="backend",
+        default="disk",
+        choices=["disk", "chroma"],
+        help="Vector store backend (alias: --store)",
+    )
     query.add_argument("--chroma-prefix", default="traditional_medicine", help="Chroma collection prefix (backend=chroma)")
     query.add_argument("--embed-model", default="BAAI/bge-m3", help="HF embedding model (must match ingest)")
     query.add_argument("--embed-batch", type=int, default=8, help="Embedding batch size")
@@ -115,6 +134,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     query.add_argument("--diseases-top-k", type=int, default=3, help="Top-k retrieval for diseases")
     query.add_argument("--emergency-top-k", type=int, default=2, help="Top-k retrieval for emergency")
     query.add_argument("--verbose", action="store_true", help="Print router decision process")
+    query.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="Retrieval-only: do not call any LLM, just return the most relevant context chunks.",
+    )
 
     return p
 
@@ -182,43 +206,45 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 def cmd_query(args: argparse.Namespace) -> None:
     from modules.router_engine import build_router_query_engine
 
-    api_base = (os.getenv("LLM_API_BASE") or "").strip()
-    if api_base:
-        from modules.remote_llm import RemoteLLM
+    llm = None
+    if not args.no_llm:
+        api_base = (os.getenv("LLM_API_BASE") or "").strip()
+        if api_base:
+            from modules.remote_llm import RemoteLLM
 
-        llm = RemoteLLM.from_env()
-    else:
-        backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
-        hf_model_id = (os.getenv("HF_MODEL") or "").strip()
-
-        if backend == "hf" or hf_model_id:
-            try:
-                from transformers import AutoTokenizer, AutoModelForCausalLM
-            except Exception as e:
-                raise RuntimeError("Self-hosted (HF) backend requires transformers to be installed") from e
-
-            try:
-                from llama_index.llms.huggingface import HuggingFaceLLM
-            except Exception as e:
-                raise RuntimeError("Self-hosted (HF) backend requires llama-index-llms-huggingface") from e
-
-            model_id = hf_model_id or args.model
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
-            import torch
-
-            force_cpu = (os.getenv("FORCE_CPU") or "").strip().lower() in {"1", "true", "yes", "y"}
-            device_map = (os.getenv("HF_DEVICE_MAP") or "").strip() or None
-            if device_map is None:
-                device_map = "cpu" if (force_cpu or os.name == "nt") else "auto"
-            torch_dtype = "auto" if device_map != "cpu" else torch.float32
-
-            hf_model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, torch_dtype=torch_dtype)
-            llm = HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=1024)
+            llm = RemoteLLM.from_env()
         else:
-            raise ValueError(
-                "query requires an LLM. Set LLM_API_BASE (remote Colab/ngrok) "
-                "or set HF_MODEL/LLM_BACKEND=hf for local self-hosting."
-            )
+            backend = (os.getenv("LLM_BACKEND") or "").strip().lower()
+            hf_model_id = (os.getenv("HF_MODEL") or "").strip()
+
+            if backend == "hf" or hf_model_id:
+                try:
+                    from transformers import AutoTokenizer, AutoModelForCausalLM
+                except Exception as e:
+                    raise RuntimeError("Self-hosted (HF) backend requires transformers to be installed") from e
+
+                try:
+                    from llama_index.llms.huggingface import HuggingFaceLLM
+                except Exception as e:
+                    raise RuntimeError("Self-hosted (HF) backend requires llama-index-llms-huggingface") from e
+
+                model_id = hf_model_id or args.model
+                tokenizer = AutoTokenizer.from_pretrained(model_id)
+                import torch
+
+                force_cpu = (os.getenv("FORCE_CPU") or "").strip().lower() in {"1", "true", "yes", "y"}
+                device_map = (os.getenv("HF_DEVICE_MAP") or "").strip() or None
+                if device_map is None:
+                    device_map = "cpu" if (force_cpu or os.name == "nt") else "auto"
+                torch_dtype = "auto" if device_map != "cpu" else torch.float32
+
+                hf_model = AutoModelForCausalLM.from_pretrained(model_id, device_map=device_map, torch_dtype=torch_dtype)
+                llm = HuggingFaceLLM(model=hf_model, tokenizer=tokenizer, temperature=0.0, max_new_tokens=1024)
+            else:
+                raise ValueError(
+                    "query requires an LLM unless --no-llm is set. "
+                    "Set LLM_API_BASE (remote Colab/ngrok) or set HF_MODEL/LLM_BACKEND=hf for local self-hosting."
+                )
 
     vs = MedicalVectorStore(
         persist_dir=args.persist_dir,

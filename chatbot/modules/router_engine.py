@@ -72,6 +72,52 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
         return out
 
     def _build_context(self, chunks: List[RetrievedChunk]) -> str:
+        # Keep prompts small enough for remote LLMs.
+        # These defaults are conservative; can be overridden via env.
+        max_total = int(os.getenv("LLM_CONTEXT_MAX_CHARS") or "8000")
+        max_per_chunk = int(os.getenv("LLM_CONTEXT_MAX_CHARS_PER_CHUNK") or "2500")
+
+        def _condense_for_index(text: str) -> str:
+            t = (text or "").strip()
+            if not t:
+                return t
+            # Emergency chunks can be extremely long (lists of signs/steps). Keep only the most useful fields.
+            if self._index_type == "emergency":
+                # Prefer the "First aid" part; optionally include the condition header.
+                lower = t.lower()
+                cond = ""
+                fa = ""
+                ant = ""
+
+                # Condition header (first line if present)
+                if lower.startswith("condition:"):
+                    first_nl = t.find("\n")
+                    cond = t if first_nl < 0 else t[:first_nl]
+
+                # First aid block
+                fa_key = "first aid:"
+                fa_pos = lower.find(fa_key)
+                if fa_pos >= 0:
+                    # Stop at Antidote: if present
+                    stop_pos = lower.find("antidote:", fa_pos)
+                    block = t[fa_pos : (stop_pos if stop_pos >= 0 else len(t))].strip()
+                    fa = block
+
+                # Antidote line
+                ant_pos = lower.find("antidote:")
+                if ant_pos >= 0:
+                    ant_line = t[ant_pos:].strip()
+                    # Keep just the first line of antidote if it is multi-line
+                    nl = ant_line.find("\n")
+                    ant = ant_line if nl < 0 else ant_line[:nl]
+
+                parts = [p for p in (cond, fa, ant) if p]
+                t = "\n".join(parts).strip() or t
+
+            if len(t) > max_per_chunk:
+                t = t[:max_per_chunk].rstrip() + "\n…(cắt bớt)"
+            return t
+
         parts: List[str] = []
         for i, ch in enumerate(chunks, start=1):
             source = ch.metadata.get("source_path") or ch.metadata.get("source") or ""
@@ -87,35 +133,112 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
             if ch.score is not None:
                 header_bits.append(f"score={ch.score:.4f}")
             header = " ".join(header_bits)
-            parts.append(f"{header}\n{ch.text}")
-        return "\n\n---\n\n".join(parts).strip()
+            text = _condense_for_index(ch.text)
+            parts.append(f"{header}\n{text}")
+
+            # Stop once we hit the total context budget.
+            joined = "\n\n---\n\n".join(parts)
+            if len(joined) >= max_total:
+                parts[-1] = (parts[-1][: max(0, max_total - (len(joined) - len(parts[-1])))]).rstrip() + "\n…(cắt bớt)"
+                break
+
+        ctx = "\n\n---\n\n".join(parts).strip()
+        if len(ctx) > max_total:
+            ctx = ctx[:max_total].rstrip() + "\n…(cắt bớt)"
+        return ctx
 
     def _answer(self, query: Any, context: str) -> str:
         query_s = self._coerce_query_text(query)
         if self._llm is None or not hasattr(self._llm, "complete"):
-            raise RuntimeError(
-                "LLM chưa được cấu hình cho query. Hãy set LLM_API_BASE (remote Colab/ngrok) "
-                "hoặc HF_MODEL/LLM_BACKEND=hf (self-host local) trước khi query."
-            )
-        sys = (
-            self._system_prompt
-            or "Bạn là trợ lý y học cổ truyền. Trả lời ngắn gọn, đúng trọng tâm, dựa trên ngữ cảnh cung cấp. "
-            "Nếu ngữ cảnh không đủ, hãy nói rõ không đủ thông tin thay vì bịa."
-        )
+            # Retrieval-only mode: return context directly.
+            if not context.strip():
+                return "Không tìm thấy dữ liệu phù hợp trong chỉ mục."
+            return ("Trích đoạn liên quan:\n\n" + context.strip()).strip()
+        def _cleanup_llm_answer(text: str) -> str:
+            """Remove common prompt-echo artifacts from the remote LLM output."""
+            t = (text or "").strip()
+            if not t:
+                return t
 
-        prompt = (
-            f"{sys}\n\n"
-            f"NGỮ CẢNH (trích từ kho dữ liệu):\n{context}\n\n"
-            f"CÂU HỎI: {query_s}\n\n"
-            "YÊU CẦU:\n"
-            "- Trả lời bằng tiếng Việt.\n"
-            "- Nếu là câu hỏi về đặc điểm cây, ưu tiên thông tin từ phần 'Features:' (botanical_features).\n"
-            "- Nếu có thể, kết thúc bằng 1 dòng 'Nguồn:' liệt kê id hoặc source đã dùng.\n"
-        )
+            # Drop leading instruction bullets that sometimes get echoed.
+            # Only removes an initial contiguous block.
+            lines = t.splitlines()
+            drop_prefix = []
+            for line in lines[:12]:
+                s = line.strip().lower()
+                if not s:
+                    drop_prefix.append(line)
+                    continue
+                is_bullet = s.startswith("-") or s.startswith("•")
+                looks_like_rules = any(
+                    k in s
+                    for k in (
+                        "nếu không có thông tin",
+                        "không sử dụng",
+                        "không nhắc lại",
+                        "không trích",
+                        "không dùng",
+                        "hướng dẫn",
+                        "yêu cầu",
+                    )
+                )
+                if is_bullet and looks_like_rules:
+                    drop_prefix.append(line)
+                    continue
+                break
+
+            if drop_prefix:
+                t = "\n".join(lines[len(drop_prefix) :]).strip()
+            return t
+
+        if self._index_type == "emergency":
+            sys = (
+                self._system_prompt
+                or "Bạn là trợ lý sơ cứu. Trả lời rõ ràng, trọn vẹn, ưu tiên an toàn và dựa trên ngữ cảnh cung cấp. "
+                "Nếu ngữ cảnh không đủ, hãy nói rõ không đủ thông tin thay vì bịa."
+            )
+        else:
+            sys = (
+                self._system_prompt
+                or "Bạn là trợ lý y học cổ truyền. Trả lời ngắn gọn, đúng trọng tâm, dựa trên ngữ cảnh cung cấp. "
+                "Nếu ngữ cảnh không đủ, hãy nói rõ không đủ thông tin thay vì bịa."
+            )
+
+        extra_rules = (os.getenv("LLM_SYSTEM_RULES") or "").strip()
+        if extra_rules:
+            sys = (sys.rstrip() + "\n\nQuy tắc:\n" + extra_rules.strip()).strip()
+
+        if self._index_type == "emergency":
+            prompt = (
+                f"{sys}\n\n"
+                f"NGỮ CẢNH (trích từ kho dữ liệu):\n{context}\n\n"
+                f"CÂU HỎI: {query_s}\n\n"
+                "HƯỚNG DẪN TRẢ LỜI:\n"
+                "- CHỈ trả lời nội dung, KHÔNG nhắc lại hướng dẫn này.\n"
+                "- Trả lời bằng tiếng Việt.\n"
+                "- Trình bày theo các mục ngắn gọn, dạng checklist:\n"
+                "  1) Việc cần làm ngay\n"
+                "  2) Không nên làm\n"
+                "  3) Khi nào cần đi viện/gọi cấp cứu\n"
+                "- Giữ câu trả lời gọn (khoảng 8–12 dòng), ưu tiên các bước quan trọng nhất.\n"
+                "- Không đưa ra chẩn đoán; ưu tiên khuyến cáo an toàn chung.\n"
+                "- Kết thúc bằng 1 dòng 'Nguồn:' liệt kê id hoặc source đã dùng.\n"
+            )
+        else:
+            prompt = (
+                f"{sys}\n\n"
+                f"NGỮ CẢNH (trích từ kho dữ liệu):\n{context}\n\n"
+                f"CÂU HỎI: {query_s}\n\n"
+                "YÊU CẦU:\n"
+                "- CHỈ trả lời nội dung, KHÔNG nhắc lại các yêu cầu/hướng dẫn.\n"
+                "- Trả lời bằng tiếng Việt.\n"
+                "- Nếu là câu hỏi về đặc điểm cây, ưu tiên thông tin từ phần 'Features:' (botanical_features).\n"
+                "- Nếu có thể, kết thúc bằng 1 dòng 'Nguồn:' liệt kê id hoặc source đã dùng.\n"
+            )
 
         resp = self._llm.complete(prompt)
         text = getattr(resp, "text", None)
-        return (text or str(resp) or "").strip()
+        return _cleanup_llm_answer((text or str(resp) or "")).strip()
 
     def _images_markdown(self, chunks: List[RetrievedChunk], *, max_images: int = 1, max_bytes: int = 250_000) -> str:
         """Build a small Markdown block with embedded images (data URLs).
@@ -274,15 +397,44 @@ class VietnameseEmbeddingRouterQueryEngine(BaseQueryEngine):
         # Small heuristic bias (Vietnamese) to avoid common mis-routing.
         ql = (query or "").lower()
         boost_herbs = 0.0
+        boost_emergency = 0.0
 
         # If user explicitly asks for a plant or vegetable, prefer herbs index.
         if any(k in ql for k in ("cây", "rau", "ăn", "nấu", "luộc", "xào", "canh", "món")):
             boost_herbs += 0.04
 
+        # If user asks about first aid / urgent situations, prefer emergency index.
+        if any(
+            k in ql
+            for k in (
+                "sơ cứu",
+                "cấp cứu",
+                "ngộ độc",
+                "bị cắn",
+                "rắn cắn",
+                "chó cắn",
+                "mèo cắn",
+                "côn trùng cắn",
+                "ong đốt",
+                "bỏng",
+                "gãy",
+                "chảy máu",
+                "đuối nước",
+                "đột quỵ",
+                "ngất",
+            )
+        ):
+            boost_emergency += 0.10
+
         if boost_herbs:
             for i, r in enumerate(self._routes):
                 if r.index_type == "herbs":
                     scores[i] = float(scores[i]) + float(boost_herbs)
+
+        if boost_emergency:
+            for i, r in enumerate(self._routes):
+                if r.index_type == "emergency":
+                    scores[i] = float(scores[i]) + float(boost_emergency)
         order = np.argsort(scores)[::-1]
         ranked: List[Tuple[str, float]] = []
         for idx in order.tolist():
