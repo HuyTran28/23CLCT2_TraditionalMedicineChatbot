@@ -75,11 +75,18 @@ _VS = MedicalVectorStore(
 )
 
 _LLM = None
+_LLM_INIT_ERROR: str | None = None
 try:
     _LLM = _get_llm()
 except Exception:
     # allow local use without GROQ for diagnostics; queries that require LLM will error later
     _LLM = None
+    try:
+        import traceback
+
+        _LLM_INIT_ERROR = traceback.format_exc()
+    except Exception:
+        _LLM_INIT_ERROR = "LLM init failed (no traceback available)"
 
 _ROUTER = build_router_query_engine(vector_store=_VS, llm=_LLM, verbose=False)
 
@@ -359,9 +366,26 @@ def _gather_images_from_chunks(index_type: str, chunks: List[Any], *, question: 
 
 
 def query_internal(question: str, include_images: bool = True, verbose: bool = False) -> Dict[str, Any]:
+    global _LLM, _LLM_INIT_ERROR, _ROUTER
+
     if not question or not question.strip():
         raise ValueError("Empty question")
     q = question.strip()
+
+    # Ensure LLM is ready (env vars may be set after import time).
+    if _LLM is None:
+        try:
+            _LLM = _get_llm()
+            _LLM_INIT_ERROR = None
+            _ROUTER = build_router_query_engine(vector_store=_VS, llm=_LLM, verbose=False)
+        except Exception as e:
+            hint = (
+                "LLM chưa sẵn sàng. Hãy cấu hình một trong các cách sau:\n"
+                "- Self-host: set env LLM_BACKEND=hf và HF_MODEL=<model_id>\n"
+                "- Groq API: set env GROQ_API_KEY\n"
+            )
+            detail = str(e)
+            raise RuntimeError(hint + ("\nChi tiết: " + detail if detail else ""))
 
     # Override: for botanical-features questions, always include images.
     if _is_botanical_features_question(q):
@@ -401,8 +425,7 @@ def query_internal(question: str, include_images: bool = True, verbose: bool = F
         try:
             answer = engine._answer(q, context)
         except Exception as e:
-            # If LLM not configured, fallback to empty answer
-            answer = f"(LLM error: {e})"
+            raise RuntimeError(f"LLM error: {e}")
     else:
         answer = "Không tìm thấy trình trả lời phù hợp trên server."
 
@@ -427,8 +450,10 @@ async def api_query(req: Request):
         include_images = True
     try:
         res = query_internal(q, include_images=include_images)
-    except Exception as e:
+    except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     return JSONResponse(res)
 
 

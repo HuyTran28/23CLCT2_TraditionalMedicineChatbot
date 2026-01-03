@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import os
+
 import numpy as np
 
 from llama_index.core.base.base_query_engine import BaseQueryEngine
@@ -90,6 +92,11 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
 
     def _answer(self, query: Any, context: str) -> str:
         query_s = self._coerce_query_text(query)
+        if self._llm is None or not hasattr(self._llm, "complete"):
+            raise RuntimeError(
+                "LLM chưa được cấu hình cho query. Hãy set HF_MODEL/LLM_BACKEND=hf (self-host) "
+                "hoặc GROQ_API_KEY (Groq API) trước khi query."
+            )
         sys = (
             self._system_prompt
             or "Bạn là trợ lý y học cổ truyền. Trả lời ngắn gọn, đúng trọng tâm, dựa trên ngữ cảnh cung cấp. "
