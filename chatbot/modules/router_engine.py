@@ -155,6 +155,33 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
                 return "Không tìm thấy dữ liệu phù hợp trong chỉ mục."
             return ("Trích đoạn liên quan:\n\n" + context.strip()).strip()
 
+        def _env_flag(name: str, default: bool = False) -> bool:
+            v = (os.getenv(name) or "").strip().lower()
+            if not v:
+                return bool(default)
+            return v in {"1", "true", "yes", "y", "on"}
+
+        def _llm_call_params() -> tuple[int | None, float | None]:
+            """Compute per-call generation params to keep answers fast."""
+            # Prefer answer-specific knobs; fall back to global ones.
+            try:
+                max_new = int((os.getenv("LLM_ANSWER_MAX_NEW_TOKENS") or "").strip() or (os.getenv("LLM_MAX_NEW_TOKENS") or "").strip() or "0")
+            except Exception:
+                max_new = 0
+            try:
+                temp = float((os.getenv("LLM_ANSWER_TEMPERATURE") or "").strip() or (os.getenv("LLM_TEMPERATURE") or "").strip() or "0")
+            except Exception:
+                temp = 0.0
+
+            # Optional fast mode: clamp tokens aggressively.
+            if _env_flag("LLM_FAST_MODE"):
+                if max_new <= 0:
+                    max_new = 160
+                max_new = min(max_new, 192)
+                temp = 0.0
+
+            return (max_new if max_new > 0 else None, temp)
+
         def _extract_sources_from_context(ctx: str, *, max_items: int = 3) -> List[str]:
             items: List[str] = []
             if not ctx:
@@ -405,7 +432,12 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
                 "- Nếu có thể, kết thúc bằng 1 dòng 'Nguồn:' liệt kê id hoặc source đã dùng.\n"
             )
 
-        resp = self._llm.complete(prompt)
+        max_new, temp = _llm_call_params()
+        try:
+            resp = self._llm.complete(prompt, max_new_tokens=max_new, temperature=temp)
+        except TypeError:
+            # Some LLM backends don't accept these kwargs.
+            resp = self._llm.complete(prompt)
         text = getattr(resp, "text", None)
         cleaned = _cleanup_llm_answer((text or str(resp) or "")).strip()
         return _enforce_concise_format(cleaned).strip()

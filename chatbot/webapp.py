@@ -33,7 +33,18 @@ DEVICE = os.getenv("DEVICE", "cpu")
 BACKEND = os.getenv("BACKEND", "disk")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    if not v:
+        return bool(default)
+    return v in {"1", "true", "yes", "y", "on"}
+
+
 def _get_llm():
+    # Allow retrieval-only mode to avoid slow/unstable remote calls.
+    if _env_flag("NO_LLM") or _env_flag("WEBAPP_NO_LLM"):
+        return None
+
     api_base = (os.getenv("LLM_API_BASE") or "").strip()
     if api_base:
         from modules.remote_llm import RemoteLLM
@@ -382,7 +393,8 @@ def query_internal(question: str, include_images: bool = True, verbose: bool = F
     q = question.strip()
 
     # Ensure LLM is ready (env vars may be set after import time).
-    if _LLM is None:
+    # If NO_LLM/WEBAPP_NO_LLM is enabled, we intentionally keep _LLM=None (retrieval-only).
+    if _LLM is None and not (_env_flag("NO_LLM") or _env_flag("WEBAPP_NO_LLM")):
         try:
             _LLM = _get_llm()
             _LLM_INIT_ERROR = None
@@ -392,9 +404,17 @@ def query_internal(question: str, include_images: bool = True, verbose: bool = F
                 "LLM chưa sẵn sàng. Hãy cấu hình một trong các cách sau:\n"
                 "- Remote (Colab/ngrok): set env LLM_API_BASE (và tùy chọn LLM_API_KEY)\n"
                 "- Self-host: set env LLM_BACKEND=hf và HF_MODEL=<model_id>\n"
+                "- Hoặc bật retrieval-only: NO_LLM=1\n"
             )
             detail = str(e)
             raise RuntimeError(hint + ("\nChi tiết: " + detail if detail else ""))
+
+    # If retrieval-only was enabled after startup, rebuild router with llm=None.
+    if _env_flag("NO_LLM") or _env_flag("WEBAPP_NO_LLM"):
+        if _LLM is not None:
+            _LLM = None
+        # Ensure router uses llm=None so engine returns context directly.
+        _ROUTER = build_router_query_engine(vector_store=_VS, llm=None, verbose=False)
 
     # Override: for botanical-features questions, always include images.
     if _is_botanical_features_question(q):
