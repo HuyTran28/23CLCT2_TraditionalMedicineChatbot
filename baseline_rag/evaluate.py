@@ -5,8 +5,6 @@ from pathlib import Path
 import pandas as pd
 from datasets import Dataset 
 from ragas import evaluate
-from langchain_groq import ChatGroq
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from naive_rag import NaiveMedicalRAG
 
 from remote_llm_adapters import RemoteJudgeChatLLM
@@ -17,62 +15,93 @@ from ragas.metrics import (
     context_recall, 
     answer_correctness
 )
-# --- FIX LỖI GROQ n=1 ---
-class ChatGroqFixed(ChatGroq):
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        if 'n' in kwargs: kwargs['n'] = 1
-        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 # --- CẤU HÌNH ---
 # Danh sách file Markdown đầu vào (moved to chatbot/data/raw)
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
 
-# Prefer self-hosted Colab/ngrok judge LLM if configured.
-# Fall back to Groq judge only when LLM_API_BASE is not set.
-if (os.getenv("LLM_API_BASE") or "").strip():
-    judge_llm = RemoteJudgeChatLLM.from_env(temperature=0.0)
-else:
-    if not os.environ.get("GROQ_API_KEY"):
-        raise ValueError("Thiếu cấu hình judge LLM. Set LLM_API_BASE hoặc GROQ_API_KEY.")
-    judge_llm = ChatGroqFixed(model="llama-3.3-70b-versatile", temperature=0)
+if not (os.getenv("LLM_API_BASE") or "").strip():
+    raise ValueError("Cần self-host LLM. Hãy set LLM_API_BASE (và LLM_API_KEY nếu có) trước khi chạy evaluate.")
 
-# Chạy Embedding trên CPU
-print(">>> Đang load model Embedding...")
+# Always use self-hosted Colab/ngrok judge LLM.
+judge_llm = RemoteJudgeChatLLM.from_env(temperature=0.0)
+
+# Chạy Embedding trên CPU (phục vụ RAGAS). Embedding KHÔNG phải LLM.
+# Để tránh download model quá lớn, cho phép cấu hình qua env var.
+EMBED_MODEL = (os.getenv("EVAL_EMBED_MODEL") or "BAAI/bge-m3").strip()
+print(f">>> Đang load model Embedding cho RAGAS: {EMBED_MODEL} ...")
+
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
 eval_embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    model_kwargs={'device': 'cpu'},
-    encode_kwargs={'normalize_embeddings': True}
+    model_name=EMBED_MODEL,
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": True},
 )
 
 INPUT_FILES = [
     str(DATA_DIR / "cay-rau-lam-thuoc" / "cay-rau-lam-thuoc.md"),
+    str(DATA_DIR / "cay-canh--cay-thuoc-trong-nha-truong" / "cay-canh-cay-thuoc-trong-nha-truong.md"),
+    str(DATA_DIR / "cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet" / "cay-thuoc-vi-thuoc-phong-chua-benh-noi-tiet.md"),
+    str(DATA_DIR / "cc_va_chong_doc_258" / "cc_va_chong_doc_258.md"),
 ]
 
-# --- DỮ LIỆU TEST (CẦN BỔ SUNG GROUND TRUTH) ---
-TEST_DATA = [
-    {
-        "question": "Các bài thuốc chữa bệnh đái tháo đường có sử dụng mướp đắng?",
-        "ground_truth": "Mướp đắng (khổ qua) có thể dùng tươi, nấu canh hoặc phơi khô sắc nước uống để hỗ trợ hạ đường huyết."
-    },
-    {
-        "question": "Lá lốt có tác dụng gì trong việc chữa đau xương khớp?",
-        "ground_truth": "Lá lốt có tác dụng ôn trung, tán hàn, hạ khí, chỉ thống, thường dùng chữa đau nhức xương khớp khi trời lạnh."
-    },
-    
-]
+BASELINE_STORAGE_DIR = Path(__file__).resolve().parent / "baseline_storage"
+
+
+def load_test_data_from_csv(csv_path: Path) -> list[dict]:
+    """Load evaluation Q/A pairs from baseline_rag/test.csv.
+
+    Expected Vietnamese columns:
+    - Câu hỏi -> question
+    - Đáp án -> ground_truth
+    """
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy file test CSV: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+    q_col = "Câu hỏi"
+    a_col = "Đáp án"
+    if q_col not in df.columns or a_col not in df.columns:
+        raise ValueError(
+            f"CSV thiếu cột bắt buộc. Cần có '{q_col}' và '{a_col}'. Cột hiện có: {list(df.columns)}"
+        )
+
+    rows: list[dict] = []
+    for _, r in df.iterrows():
+        q = str(r.get(q_col) or "").strip()
+        gt = str(r.get(a_col) or "").strip()
+        if not q or not gt:
+            continue
+        rows.append({"question": q, "ground_truth": gt})
+
+    limit_raw = (os.getenv("EVAL_LIMIT") or "").strip()
+    if limit_raw:
+        try:
+            limit = int(limit_raw)
+            if limit > 0:
+                rows = rows[:limit]
+        except Exception:
+            pass
+    return rows
 
 def main():
+    test_csv = Path(__file__).resolve().parent / "test.csv"
+    test_data = load_test_data_from_csv(test_csv)
+    if not test_data:
+        raise ValueError(f"Không có dòng hợp lệ trong {test_csv}")
+
     print(">>> Đang khởi tạo Baseline Bot...")
-    bot = NaiveMedicalRAG(INPUT_FILES)
+    bot = NaiveMedicalRAG(INPUT_FILES, persist_dir=str(BASELINE_STORAGE_DIR))
     
     questions = []
     answers = []
     contexts = []
     ground_truths = [] 
 
-    print(f">>> Đang chạy {len(TEST_DATA)} câu hỏi...")
+    print(f">>> Đang chạy {len(test_data)} câu hỏi...")
     
-    for item in TEST_DATA:
+    for item in test_data:
         q = item["question"]
         gt = item["ground_truth"]
         
@@ -84,7 +113,16 @@ def main():
         ground_truths.append(gt) # Thêm vào list
         
         # Lấy context
-        retrieved_texts = [node.node.get_content() for node in response_obj.source_nodes]
+        source_nodes = getattr(response_obj, "source_nodes", None) or []
+        retrieved_texts = []
+        for node in source_nodes:
+            try:
+                retrieved_texts.append(node.node.get_content())
+            except Exception:
+                try:
+                    retrieved_texts.append(node.get_content())
+                except Exception:
+                    continue
         contexts.append(retrieved_texts)
 
         time.sleep(5)  # Giữ khoảng cách giữa các câu hỏi

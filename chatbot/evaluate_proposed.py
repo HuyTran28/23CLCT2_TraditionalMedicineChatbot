@@ -2,18 +2,18 @@ import os
 import time
 import re
 import pandas as pd
+from pathlib import Path
 from datasets import Dataset 
 from ragas import evaluate, RunConfig 
-from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
 # --- IMPORT MODULE TỪ PROPOSED MODEL ---
 
 from modules.vector_store import MedicalVectorStore
 from modules.router_engine import build_router_query_engine, MedicalStoreQueryEngine 
-from llama_index.llms.groq import Groq as LlamaIndexGroq 
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.core.base.response.schema import Response
+from modules.remote_llm import RemoteLLM
 from ragas.metrics import (
     faithfulness, 
     answer_relevancy, 
@@ -86,42 +86,111 @@ print(">>> [Patch] Đang vá lỗi MedicalStoreQueryEngine...")
 MedicalStoreQueryEngine._query = patched_query
 
 # ==============================================================================
-# --- PHẦN 2: FIX LỖI API GROQ (n=1) ---
-class ChatGroqFixed(ChatGroq):
+# --- PHẦN 2: REMOTE-ONLY ---
+# Script này chỉ hỗ trợ self-host/remote LLM qua LLM_API_BASE (không có fallback Groq).
+
+# --- Remote judge adapter (LangChain) ---
+try:
+    from langchain_core.language_models.chat_models import BaseChatModel  # type: ignore
+    from langchain_core.messages import AIMessage  # type: ignore
+    from langchain_core.outputs import ChatGeneration, ChatResult  # type: ignore
+except Exception:  # pragma: no cover
+    from langchain.chat_models.base import BaseChatModel  # type: ignore
+    from langchain.schema import AIMessage, ChatGeneration, ChatResult  # type: ignore
+
+
+def _messages_to_prompt(messages) -> str:
+    parts = []
+    for m in messages:
+        role = getattr(m, "type", None) or getattr(m, "role", None) or m.__class__.__name__
+        content = getattr(m, "content", "")
+        parts.append(f"{str(role).upper()}: {content}")
+    parts.append("ASSISTANT:")
+    return "\n\n".join(parts)
+
+
+class RemoteJudgeChatLLM(BaseChatModel):
+    def __init__(self, remote: RemoteLLM, *, temperature: float = 0.0):
+        super().__init__()
+        self._remote = remote
+        self._temperature = float(temperature)
+
+    @classmethod
+    def from_env(cls, *, temperature: float = 0.0) -> "RemoteJudgeChatLLM":
+        return cls(RemoteLLM.from_env(), temperature=temperature)
+
+    @property
+    def _llm_type(self) -> str:
+        return "remote_colab_chat"
+
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        if 'n' in kwargs: kwargs['n'] = 1
-        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+        prompt = _messages_to_prompt(messages)
+        resp = self._remote.complete(
+            prompt,
+            max_new_tokens=int(os.getenv("LLM_MAX_NEW_TOKENS") or "512"),
+            temperature=self._temperature,
+        )
+        text = getattr(resp, "text", None)
+        content = (text if isinstance(text, str) else str(resp)).strip()
+        gen = ChatGeneration(message=AIMessage(content=content))
+        return ChatResult(generations=[gen])
+
 
 # --- CẤU HÌNH ---
-if not os.environ.get("GROQ_API_KEY"):
-    os.environ["GROQ_API_KEY"] = "YOUR_KEY_HERE"
-
-# Sửa lại cho khớp với model lúc Ingest (BAAI/bge-m3)
 PROPOSED_EMBED_MODEL = "BAAI/bge-m3" 
 VECTOR_DB_DIR = "vector_data"
 
+if not (os.getenv("LLM_API_BASE") or "").strip():
+    raise RuntimeError(
+        "Thiếu cấu hình self-host LLM. Hãy set biến môi trường LLM_API_BASE (remote-only)."
+    )
+
 # Setup Embedding (CPU)
 print(">>> Đang load model Embedding đánh giá...")
+EVAL_EMBED_MODEL = os.getenv("EVAL_EMBED_MODEL", "intfloat/multilingual-e5-small")
 eval_embeddings = HuggingFaceEmbeddings(
-    model_name="BAAI/bge-m3",
-    model_kwargs={'device': 'cpu'},
-    encode_kwargs={'normalize_embeddings': True}
+    model_name=EVAL_EMBED_MODEL,
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": True},
 )
 
-# Setup Judge LLM
-judge_llm = ChatGroqFixed(model="llama-3.3-70b-versatile", temperature=0)
+# Setup Judge LLM (remote-only)
+judge_llm = RemoteJudgeChatLLM.from_env(temperature=0.0)
 
-# Dữ liệu test
-TEST_DATA = [
-    {
-        "question": "đinh lăng có tác dụng gì?",
-        "ground_truth": "Rễ đinh lăng làm thuốc bổ, lợi tiểu. Lá chữa cảm sốt, giã nát đắp chữa mụn nhọt, sưng tấy."
-    }
-]
+
+def load_test_data_from_csv(csv_path: Path) -> list[dict]:
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy file test CSV: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+    q_col = "Câu hỏi"
+    a_col = "Đáp án"
+    if q_col not in df.columns or a_col not in df.columns:
+        raise ValueError(
+            f"CSV thiếu cột bắt buộc. Cần có '{q_col}' và '{a_col}'. Cột hiện có: {list(df.columns)}"
+        )
+
+    rows: list[dict] = []
+    for _, r in df.iterrows():
+        q = str(r.get(q_col) or "").strip()
+        gt = str(r.get(a_col) or "").strip()
+        if not q or not gt:
+            continue
+        rows.append({"question": q, "ground_truth": gt})
+
+    limit_raw = (os.getenv("EVAL_LIMIT") or "").strip()
+    if limit_raw:
+        try:
+            limit = int(limit_raw)
+            if limit > 0:
+                rows = rows[:limit]
+        except Exception:
+            pass
+    return rows
 
 def setup_proposed_system():
     print(f"--- Đang khởi động Proposed Model ---")
-    llm = LlamaIndexGroq(model="llama-3.3-70b-versatile", api_key=os.environ["GROQ_API_KEY"])
+    llm = RemoteLLM.from_env()
     
     vs = MedicalVectorStore(
         persist_dir=VECTOR_DB_DIR,
@@ -146,6 +215,11 @@ def main():
     if not os.path.exists(VECTOR_DB_DIR):
         raise FileNotFoundError(f"Chưa thấy folder '{VECTOR_DB_DIR}'!")
 
+    test_csv = Path(__file__).resolve().parent.parent / "baseline_rag" / "test.csv"
+    test_data = load_test_data_from_csv(test_csv)
+    if not test_data:
+        raise ValueError(f"Không có dòng hợp lệ trong {test_csv}")
+
     query_engine = setup_proposed_system()
     
     questions = []
@@ -153,9 +227,9 @@ def main():
     contexts = []
     ground_truths = [] 
 
-    print(f"\n>>> Đang chạy {len(TEST_DATA)} câu hỏi...")
+    print(f"\n>>> Đang chạy {len(test_data)} câu hỏi...")
     
-    for item in TEST_DATA:
+    for item in test_data:
         q = item["question"]
         gt = item["ground_truth"]
         

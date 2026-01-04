@@ -32,9 +32,8 @@ def _import_chatbot_remote_llm():
 
 def _llama_index_imports():
     from llama_index.core.llms import CustomLLM, CompletionResponse, LLMMetadata
-    from llama_index.core.llms.callbacks import llm_completion_callback
 
-    return CustomLLM, CompletionResponse, LLMMetadata, llm_completion_callback
+    return CustomLLM, CompletionResponse, LLMMetadata
 
 
 class LlamaIndexRemoteLLM(_llama_index_imports()[0]):
@@ -49,7 +48,7 @@ class LlamaIndexRemoteLLM(_llama_index_imports()[0]):
         model_name: str = "self-hosted-colab",
         temperature: float = 0.0,
     ):
-        CustomLLM, _, _, _ = _llama_index_imports()
+        CustomLLM, _, _ = _llama_index_imports()
         # Call CustomLLM pydantic init
         super(CustomLLM, self).__init__()  # type: ignore[misc]
 
@@ -72,7 +71,7 @@ class LlamaIndexRemoteLLM(_llama_index_imports()[0]):
 
     @property
     def metadata(self):
-        _, _, LLMMetadata, _ = _llama_index_imports()
+        _, _, LLMMetadata = _llama_index_imports()
         return LLMMetadata(
             context_window=self._context_window,
             num_output=self._num_output,
@@ -80,27 +79,23 @@ class LlamaIndexRemoteLLM(_llama_index_imports()[0]):
         )
 
     def complete(self, prompt: str, **kwargs: Any):
-        _, CompletionResponse, _, llm_completion_callback = _llama_index_imports()
+        _, CompletionResponse, _ = _llama_index_imports()
 
-        @llm_completion_callback()
-        def _run(prompt_inner: str, **kwargs_inner: Any):
-            max_new_tokens = kwargs_inner.get("max_new_tokens")
-            if max_new_tokens is None:
-                max_new_tokens = self._num_output
+        max_new_tokens = kwargs.get("max_new_tokens")
+        if max_new_tokens is None:
+            max_new_tokens = self._num_output
 
-            temperature = kwargs_inner.get("temperature")
-            if temperature is None:
-                temperature = self._temperature
+        temperature = kwargs.get("temperature")
+        if temperature is None:
+            temperature = self._temperature
 
-            resp = self._remote.complete(
-                prompt_inner,
-                max_new_tokens=int(max_new_tokens),
-                temperature=float(temperature),
-            )
-            text = getattr(resp, "text", None)
-            return CompletionResponse(text=(text if isinstance(text, str) else str(resp)))
-
-        return _run(prompt, **kwargs)
+        resp = self._remote.complete(
+            prompt,
+            max_new_tokens=int(max_new_tokens),
+            temperature=float(temperature),
+        )
+        text = getattr(resp, "text", None)
+        return CompletionResponse(text=(text if isinstance(text, str) else str(resp)))
 
     def stream_complete(self, prompt: str, **kwargs: Any):
         # Remote server is non-streaming; emulate stream.
@@ -112,12 +107,20 @@ class LlamaIndexRemoteLLM(_llama_index_imports()[0]):
 # =============================================================================
 
 def _langchain_imports():
-    # This repo depends on `langchain` (see requirements.txt). Keep imports here
-    # to that package to avoid env-specific `langchain_core` resolution issues.
-    from langchain.chat_models.base import BaseChatModel  # type: ignore
-    from langchain.schema import AIMessage, ChatGeneration, ChatResult  # type: ignore
+    # Prefer langchain-core split packages (modern LangChain). Fall back to legacy
+    # `langchain` imports for older installs.
+    try:
+        from langchain_core.language_models.chat_models import BaseChatModel  # type: ignore
+        from langchain_core.messages import AIMessage  # type: ignore
+        from langchain_core.outputs import ChatGeneration, ChatResult  # type: ignore
 
-    return BaseChatModel, AIMessage, ChatGeneration, ChatResult
+        return BaseChatModel, AIMessage, ChatGeneration, ChatResult
+    except Exception:  # pragma: no cover
+        from langchain.chat_models.base import BaseChatModel  # type: ignore
+        # Older LangChain exposed these on langchain.schema.
+        from langchain.schema import AIMessage, ChatGeneration, ChatResult  # type: ignore
+
+        return BaseChatModel, AIMessage, ChatGeneration, ChatResult
 
 
 def _messages_to_prompt(messages: List[Any]) -> str:
