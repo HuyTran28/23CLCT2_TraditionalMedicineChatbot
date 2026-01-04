@@ -187,6 +187,3 @@ cython_debug/
 *.docx
 
 .vscode/
-data/
-chatbot/vector_data
-baseline_storage/
