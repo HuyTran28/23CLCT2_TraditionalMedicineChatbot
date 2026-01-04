@@ -20,6 +20,11 @@ from modules.router_engine import build_router_query_engine
 
 app = FastAPI()
 
+@app.get("/favicon.ico")
+def favicon() -> Response:
+    # Avoid noisy 404s in logs; browsers request this automatically.
+    return Response(status_code=204)
+
 # Initialize shared resources at import time (one model load)
 PERSIST_DIR = os.getenv("PERSIST_DIR", "vector_data")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
@@ -520,25 +525,46 @@ def home():
       <h4>Sources</h4>
       <ul id="srcs"></ul>
 
-      <script>
-        document.getElementById('ask').onclick = async function(){
+            <script>
+                                async function doAsk(){
           const q = document.getElementById('q').value;
           const inc = document.getElementById('img').checked;
           document.getElementById('ans').textContent = '...thinking...';
           document.getElementById('imgs').innerHTML = '';
           document.getElementById('srcs').innerHTML = '';
           try{
-            const r = await fetch('/api/query', {method:'POST',headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:q, include_images:inc})});
-            const j = await r.json();
-            document.getElementById('ans').textContent = j.answer;
+                        const r = await fetch('/api/query', {method:'POST',headers:{'Content-Type':'application/json'}, body: JSON.stringify({question:q, include_images:inc})});
+                        const ct = (r.headers.get('content-type')||'').toLowerCase();
+                        let j = null;
+                        let rawText = '';
+                        if(ct.includes('application/json')){
+                            j = await r.json();
+                        }else{
+                            rawText = await r.text();
+                        }
+                        if(!r.ok){
+                            const detail = (j && (j.detail||j.error)) ? (j.detail||j.error) : (rawText || ('HTTP '+r.status));
+                            document.getElementById('ans').textContent = 'Error: ' + detail;
+                            return;
+                        }
+                        document.getElementById('ans').textContent = (j && j.answer) ? j.answer : '';
             for(const im of j.images||[]){
               const el = document.createElement('img'); el.src = im.url; el.alt = im.alt; document.getElementById('imgs').appendChild(el);
             }
             for(const s of j.sources||[]){
               const li = document.createElement('li'); li.textContent = s.source + ' ('+s.id+')'; document.getElementById('srcs').appendChild(li);
             }
-          }catch(e){document.getElementById('ans').textContent = 'Error: '+e}
-        }
+            }catch(e){document.getElementById('ans').textContent = 'Error: '+e}
+                }
+
+                document.getElementById('ask').onclick = doAsk;
+                document.getElementById('q').addEventListener('keydown', function(ev){
+                    // Enter submits; Shift+Enter inserts a newline.
+                    if(ev.key === 'Enter' && !ev.shiftKey){
+                        ev.preventDefault();
+                        doAsk();
+                    }
+                });
       </script>
     </body>
     </html>
@@ -549,4 +575,9 @@ def home():
 if __name__ == '__main__':
     import uvicorn
 
-    uvicorn.run('webapp:app', host='0.0.0.0', port=8000, reload=False)
+    host = os.getenv("WEBAPP_HOST", "127.0.0.1")
+    port = int(os.getenv("WEBAPP_PORT", "8000"))
+    print(f"Web UI: http://{host}:{port}/")
+    print("If this is the first run, startup may take a while (loading embedding model/index).")
+    # Run the in-memory app directly so this script works regardless of cwd and avoids re-import.
+    uvicorn.run(app, host=host, port=port, reload=False)

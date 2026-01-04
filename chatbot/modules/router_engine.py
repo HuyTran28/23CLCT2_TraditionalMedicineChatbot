@@ -154,6 +154,30 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
             if not context.strip():
                 return "Không tìm thấy dữ liệu phù hợp trong chỉ mục."
             return ("Trích đoạn liên quan:\n\n" + context.strip()).strip()
+
+        def _extract_sources_from_context(ctx: str, *, max_items: int = 3) -> List[str]:
+            items: List[str] = []
+            if not ctx:
+                return items
+            for line in ctx.splitlines():
+                s = line.strip()
+                if not s.startswith("#"):
+                    continue
+                # Header looks like: "#1 id=... source=... chunk=... score=..."
+                parts = s.split()
+                for p in parts:
+                    if p.startswith("id="):
+                        val = p[3:].strip()
+                        if val and val not in items:
+                            items.append(val)
+                    elif p.startswith("source="):
+                        val = p[7:].strip()
+                        if val and val not in items:
+                            items.append(val)
+                    if len(items) >= max_items:
+                        return items
+            return items
+
         def _cleanup_llm_answer(text: str) -> str:
             """Remove common prompt-echo artifacts from the remote LLM output."""
             t = (text or "").strip()
@@ -191,6 +215,148 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
                 t = "\n".join(lines[len(drop_prefix) :]).strip()
             return t
 
+        def _enforce_concise_format(text: str) -> str:
+            """Enforce concise, on-topic answers regardless of model verbosity."""
+            t = (text or "").strip()
+            if not t:
+                return t
+
+            # Global caps (can be overridden via env for tuning).
+            max_chars = int(os.getenv("LLM_ANSWER_MAX_CHARS") or "1400")
+            max_lines_general = int(os.getenv("LLM_ANSWER_MAX_LINES") or "18")
+            max_lines_emergency = int(os.getenv("LLM_ANSWER_MAX_LINES_EMERGENCY") or "14")
+            max_items_per_section = int(os.getenv("LLM_ANSWER_MAX_ITEMS_PER_SECTION") or os.getenv("LLM_ANSWER_MAX_BULLETS_PER_SECTION") or "4")
+
+            # Keep/append sources.
+            src_items = _extract_sources_from_context(context, max_items=3)
+            src_line = "Nguồn: " + ", ".join(src_items) if src_items else ""
+
+            if self._index_type != "emergency":
+                # General: just cap length/lines and ensure a 'Nguồn:' line.
+                lines = [ln.rstrip() for ln in t.splitlines()]
+                lines = [ln for ln in lines if ln.strip()]
+                if src_line and not any(ln.strip().lower().startswith("nguồn:") for ln in lines):
+                    lines.append(src_line)
+                if len(lines) > max_lines_general:
+                    lines = lines[:max_lines_general]
+                    if not lines[-1].endswith("…"):
+                        lines[-1] = lines[-1].rstrip(".") + "…"
+                t2 = "\n".join(lines).strip()
+                if len(t2) > max_chars:
+                    t2 = t2[:max_chars].rstrip() + "…"
+                return t2
+
+            # Emergency: keep exactly sections 1-3, emit short paragraph-style answer.
+            raw_lines = [ln.rstrip() for ln in t.splitlines()]
+            raw_lines = [ln for ln in raw_lines if ln.strip()]
+
+            # Separate out a trailing sources line if present.
+            tail_source = ""
+            for i in range(len(raw_lines) - 1, -1, -1):
+                if raw_lines[i].strip().lower().startswith("nguồn:"):
+                    tail_source = raw_lines[i].strip()
+                    raw_lines = raw_lines[:i]
+                    break
+
+            # Parse sections by headings like "1) ...".
+            sections: Dict[str, List[str]] = {"1": [], "2": [], "3": []}
+            current: Optional[str] = None
+            for ln in raw_lines:
+                s = ln.strip()
+                if s.startswith("1)"):
+                    current = "1"
+                    sections[current].append("Việc cần làm ngay:")
+                    continue
+                if s.startswith("2)"):
+                    current = "2"
+                    sections[current].append("Không nên làm:")
+                    continue
+                if s.startswith("3)"):
+                    current = "3"
+                    sections[current].append("Khi nào cần đi viện/gọi cấp cứu:")
+                    continue
+                if current in sections:
+                    sections[current].append(ln)
+
+            def _items_to_sentence(items: List[str]) -> str:
+                cleaned_items: List[str] = []
+                for it in items:
+                    s = (it or "").strip()
+                    if not s:
+                        continue
+                    if s.startswith("-") or s.startswith("•"):
+                        s = s.lstrip("-• ").strip()
+                    # Avoid ending with trailing punctuation duplication.
+                    cleaned_items.append(s)
+                if not cleaned_items:
+                    return ""
+                # Join as a compact paragraph.
+                return "; ".join(cleaned_items)
+
+            # If model didn't follow headings, fallback to truncated raw.
+            if not any(sections[k] for k in ("1", "2", "3")):
+                out = raw_lines
+            else:
+                out: List[str] = []
+                for key in ("1", "2", "3"):
+                    block = sections[key]
+                    if not block:
+                        continue
+                    heading = block[0]
+                    body = block[1:]
+                    # Keep up to N meaningful items, then compress into one sentence.
+                    items: List[str] = []
+                    for b in body:
+                        bs = b.strip()
+                        if not bs:
+                            continue
+                        if bs.startswith("-") or bs.startswith("•"):
+                            items.append(bs)
+                        else:
+                            # Treat free-form lines as items too.
+                            items.append(bs)
+                        if len(items) >= max_items_per_section:
+                            break
+
+                    sentence = _items_to_sentence(items)
+                    if sentence:
+                        out.append(f"{heading} {sentence}")
+                    else:
+                        out.append(f"{heading} Không thấy trong tài liệu.")
+
+                # Paragraph style: separate sections by blank line.
+                out = [ln for ln in out if ln.strip()]
+                if len(out) >= 2:
+                    out = [out[0], "", *out[1:]]
+                    # Insert blank lines between all sections
+                    out2: List[str] = []
+                    for i, ln in enumerate(out):
+                        out2.append(ln)
+                        # after each non-empty section line (except last), insert blank line
+                        if ln and i < len(out) - 1:
+                            # only if next isn't already blank
+                            if (i + 1) < len(out) and out[i + 1] != "":
+                                out2.append("")
+                    out = out2
+                if out and out[-1] == "":
+                    out.pop()
+
+            # Ensure sources line at the end.
+            final_source = tail_source or src_line
+            if final_source:
+                out.append(final_source)
+
+            # Cap length.
+            if len(out) > max_lines_emergency:
+                out = out[:max_lines_emergency]
+                if final_source and not out[-1].strip().lower().startswith("nguồn:"):
+                    out[-1] = out[-1].rstrip(".") + "…"
+                    out.append(final_source)
+            t2 = "\n".join([ln for ln in out if ln is not None]).strip()
+            if len(t2) > max_chars:
+                t2 = t2[:max_chars].rstrip() + "…"
+            return t2
+
         if self._index_type == "emergency":
             sys = (
                 self._system_prompt
@@ -216,11 +382,13 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
                 "HƯỚNG DẪN TRẢ LỜI:\n"
                 "- CHỈ trả lời nội dung, KHÔNG nhắc lại hướng dẫn này.\n"
                 "- Trả lời bằng tiếng Việt.\n"
-                "- Trình bày theo các mục ngắn gọn, dạng checklist:\n"
-                "  1) Việc cần làm ngay\n"
-                "  2) Không nên làm\n"
-                "  3) Khi nào cần đi viện/gọi cấp cứu\n"
-                "- Giữ câu trả lời gọn (khoảng 8–12 dòng), ưu tiên các bước quan trọng nhất.\n"
+                "- CHỈ sử dụng thông tin có trong NGỮ CẢNH. Nếu NGỮ CẢNH không có, hãy nói 'Không thấy trong tài liệu'.\n"
+                "- Không tự thêm thuốc/thủ thuật/liều lượng không có trong NGỮ CẢNH.\n"
+                "- Trình bày theo 3 đoạn ngắn (KHÔNG gạch đầu dòng), mỗi đoạn 1–3 câu:\n"
+                "  (1) Việc cần làm ngay\n"
+                "  (2) Không nên làm\n"
+                "  (3) Khi nào cần đi viện/gọi cấp cứu\n"
+                "- Tổng độ dài tối đa ~10 dòng (ngắn, đúng trọng tâm).\n"
                 "- Không đưa ra chẩn đoán; ưu tiên khuyến cáo an toàn chung.\n"
                 "- Kết thúc bằng 1 dòng 'Nguồn:' liệt kê id hoặc source đã dùng.\n"
             )
@@ -232,13 +400,15 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
                 "YÊU CẦU:\n"
                 "- CHỈ trả lời nội dung, KHÔNG nhắc lại các yêu cầu/hướng dẫn.\n"
                 "- Trả lời bằng tiếng Việt.\n"
+                "- CHỈ sử dụng thông tin có trong NGỮ CẢNH. Nếu NGỮ CẢNH không có, hãy nói 'Không thấy trong tài liệu'.\n"
                 "- Nếu là câu hỏi về đặc điểm cây, ưu tiên thông tin từ phần 'Features:' (botanical_features).\n"
                 "- Nếu có thể, kết thúc bằng 1 dòng 'Nguồn:' liệt kê id hoặc source đã dùng.\n"
             )
 
         resp = self._llm.complete(prompt)
         text = getattr(resp, "text", None)
-        return _cleanup_llm_answer((text or str(resp) or "")).strip()
+        cleaned = _cleanup_llm_answer((text or str(resp) or "")).strip()
+        return _enforce_concise_format(cleaned).strip()
 
     def _images_markdown(self, chunks: List[RetrievedChunk], *, max_images: int = 1, max_bytes: int = 250_000) -> str:
         """Build a small Markdown block with embedded images (data URLs).

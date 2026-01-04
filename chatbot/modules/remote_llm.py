@@ -151,6 +151,14 @@ class RemoteLLM:
         if r.status_code >= 400:
             body = (r.text or "").strip()
 
+            if r.status_code == 404:
+                hint_404 = (
+                    "\n\nHint: Remote trả 404 cho /v1/complete. Thường là LLM_API_BASE đang trỏ sai ngrok URL "
+                    "(tunnel đã đổi) hoặc server Colab chưa chạy đúng script. "
+                    "Kiểm tra: GET {LLM_API_BASE}/health phải trả 200 JSON, và {LLM_API_BASE}/v1/complete phải tồn tại."
+                )
+                raise RuntimeError(f"Remote LLM error 404 from {url}: {body[:800]}{hint_404}")
+
             # ngrok often returns an HTML error page when the tunnel is offline
             # (e.g., Colab runtime stopped or ngrok URL changed).
             content_type = (r.headers.get("content-type") or "").lower()
