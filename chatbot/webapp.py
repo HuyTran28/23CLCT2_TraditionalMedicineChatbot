@@ -37,6 +37,19 @@ def _get_groq_llm():
     return Groq(api_key=api_key, model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"), temperature=0.0, max_tokens=1024)
 
 
+def _get_remote_llm():
+    from modules.remote_llm import RemoteLLM
+
+    return RemoteLLM.from_env()
+
+
+def _get_llm():
+    # Prefer remote Colab/ngrok server when configured.
+    if os.getenv("LLM_API_BASE"):
+        return _get_remote_llm()
+    return _get_groq_llm()
+
+
 # Build once
 _VS = MedicalVectorStore(
     persist_dir=PERSIST_DIR,
@@ -48,7 +61,7 @@ _VS = MedicalVectorStore(
 
 _LLM = None
 try:
-    _LLM = _get_groq_llm()
+    _LLM = _get_llm()
 except Exception:
     # allow local use without GROQ for diagnostics; queries that require LLM will error later
     _LLM = None

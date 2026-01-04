@@ -6,6 +6,7 @@ python-dotenv
 pillow>=10.0.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
+requests>=2.31.0
 
 llama-index-readers-file
 transformers>=4.56.1

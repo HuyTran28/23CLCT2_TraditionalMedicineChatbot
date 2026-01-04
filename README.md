@@ -1,3 +1,32 @@
+## Self-host LLM on Google Colab (T4) + connect from Windows
+
+This repo supports a simple "remote LLM" mode: the chatbot calls a small HTTP server (running on Colab) at `LLM_API_BASE`.
+### 1) Start the Colab server
+
+- Open and run: `colab_llm_server.ipynb`
+- Wait until `/health` returns 200 and ngrok prints:
+  - `LLM_API_BASE = https://<...>.ngrok-free.app`
+The Colab server exposes:
+- `GET /health`
+- `POST /v1/complete` with JSON `{ "prompt": "...", "max_new_tokens": 1024, "temperature": 0.0 }`
+### 2) Configure your local app to use the remote LLM
+
+In Windows PowerShell:
+
+```powershell
+$env:LLM_API_BASE = "https://<paste-from-colab>"
+# Optional: if you set LLM_API_KEY in Colab, set the same token locally
+# $env:LLM_API_KEY = "my-secret-token"
+### 3) Ask a question via the router
+
+```powershell
+python chatbot/main.py query --persist-dir vector_data --backend disk --question "Cây X có tác dụng gì?"
+```
+Or run the web UI:
+
+```powershell
+uvicorn chatbot.webapp:app --reload
+```
 # Document OCR & Conversion Pipeline
 
 This repository provides a modern pipeline for converting PDF documents to Word format using state-of-the-art OCR techniques. It supports both scanned and digital PDFs, leveraging marker-pdf for Vietnamese text recognition with superior accuracy.

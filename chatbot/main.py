@@ -172,13 +172,30 @@ def cmd_ingest(args: argparse.Namespace) -> None:
 
 
 def cmd_query(args: argparse.Namespace) -> None:
-    if not os.getenv("GROQ_API_KEY"):
-        raise ValueError("query requires GROQ_API_KEY in environment")
+    # Load environment from .env if present (helps local dev / setx not required)
+    try:
+        from dotenv import load_dotenv
 
-    from llama_index.llms.groq import Groq
+        load_dotenv()
+    except Exception:
+        pass
+
     from modules.router_engine import build_router_query_engine
 
-    llm = Groq(api_key=os.getenv("GROQ_API_KEY"), model=args.model, temperature=0.0, max_tokens=1024)
+    # Prefer remote self-hosted LLM if configured; otherwise fall back to Groq.
+    llm = None
+    if os.getenv("LLM_API_BASE"):
+        from modules.remote_llm import RemoteLLM
+
+        llm = RemoteLLM.from_env()
+    else:
+        if not os.getenv("GROQ_API_KEY"):
+            raise ValueError(
+                "query requires either LLM_API_BASE (remote Colab/ngrok) or GROQ_API_KEY (Groq) in environment"
+            )
+        from llama_index.llms.groq import Groq
+
+        llm = Groq(api_key=os.getenv("GROQ_API_KEY"), model=args.model, temperature=0.0, max_tokens=1024)
 
     vs = MedicalVectorStore(
         persist_dir=args.persist_dir,
