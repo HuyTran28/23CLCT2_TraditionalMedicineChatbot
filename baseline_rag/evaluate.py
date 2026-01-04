@@ -9,6 +9,8 @@ from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from naive_rag import NaiveMedicalRAG
 
+from remote_llm_adapters import RemoteJudgeChatLLM
+
 from ragas.metrics import (
     faithfulness, 
     answer_relevancy, 
@@ -24,10 +26,15 @@ class ChatGroqFixed(ChatGroq):
 # --- CẤU HÌNH ---
 # Danh sách file Markdown đầu vào (moved to chatbot/data/raw)
 DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
-if not os.environ.get("GROQ_API_KEY"):
-    os.environ["GROQ_API_KEY"] = "YOUR_KEY_HERE"
 
-judge_llm = ChatGroqFixed(model="llama-3.3-70b-versatile", temperature=0)
+# Prefer self-hosted Colab/ngrok judge LLM if configured.
+# Fall back to Groq judge only when LLM_API_BASE is not set.
+if (os.getenv("LLM_API_BASE") or "").strip():
+    judge_llm = RemoteJudgeChatLLM.from_env(temperature=0.0)
+else:
+    if not os.environ.get("GROQ_API_KEY"):
+        raise ValueError("Thiếu cấu hình judge LLM. Set LLM_API_BASE hoặc GROQ_API_KEY.")
+    judge_llm = ChatGroqFixed(model="llama-3.3-70b-versatile", temperature=0)
 
 # Chạy Embedding trên CPU
 print(">>> Đang load model Embedding...")

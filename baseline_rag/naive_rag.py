@@ -18,6 +18,8 @@ from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.groq import Groq
 
+from remote_llm_adapters import LlamaIndexRemoteLLM
+
 class NaiveMedicalRAG:
     def __init__(self, file_paths, persist_dir="./baseline_storage"):
         """
@@ -26,10 +28,17 @@ class NaiveMedicalRAG:
         - Chunking: Hierarchical/Structural (MarkdownNodeParser)
         """
         self.persist_dir = persist_dir
-        
-        # Ensure required env var exists
-        if not os.environ.get("GROQ_API_KEY"):
-            raise ValueError("Chưa thiết lập biến môi trường GROQ_API_KEY")
+
+        # Prefer self-hosted Colab/ngrok LLM if configured.
+        # Fallback to Groq only when LLM_API_BASE is not set.
+        if (os.getenv("LLM_API_BASE") or "").strip():
+            self.llm = LlamaIndexRemoteLLM.from_env()
+        else:
+            if not os.environ.get("GROQ_API_KEY"):
+                raise ValueError(
+                    "Thiếu cấu hình LLM. Set LLM_API_BASE (self-hosted) hoặc GROQ_API_KEY (Groq fallback)."
+                )
+            self.llm = Groq(model="llama-3.1-8b-instant")
 
         # --- CẤU HÌNH CHO CPU ---
         print("--- Đang load model BAAI/bge-m3 (CPU Mode)... ---")
@@ -40,9 +49,6 @@ class NaiveMedicalRAG:
             device="cpu", 
             embed_batch_size=10 
         )
-        
-        self.llm = Groq(model="llama-3.1-8b-instant")
-        
         # Setup Global Settings
         Settings.llm = self.llm
         Settings.embed_model = self.embed_model
