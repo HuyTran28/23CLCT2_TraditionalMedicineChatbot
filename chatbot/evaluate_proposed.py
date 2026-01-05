@@ -1,4 +1,5 @@
 import os
+import gc
 import time
 import re
 import pandas as pd
@@ -26,18 +27,89 @@ from ragas.metrics import (
 
 
 RUN_CONFIG_SETTINGS = {
-    # Increase parallelism to evaluate multiple items concurrently.
-    "max_workers": 4,
-    # Keep a reasonable overall timeout per job (seconds).
+    # Remote judge calls are slow; parallelism easily triggers timeouts.
+    "max_workers": 1,
+    # Per-job timeout (seconds). 600s = 10 min per question should be plenty.
     "timeout": 600,
-    "max_retries": 2,
-    "max_wait": 30,
+    "max_retries": 3,
+    "max_wait": 60,
 }
 
 
+def _clear_gpu_memory():
+    """Clear GPU memory cache to prevent OOM on T4."""
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except ImportError:
+        pass
+
+
+def _resolve_optional_positive_int(env_name: str) -> int | None:
+    raw = (os.getenv(env_name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _resolve_positive_int(env_name: str, default: int) -> int:
+    override = _resolve_optional_positive_int(env_name)
+    return override if override is not None else default
+
+
+# Reduce batch size to prevent OOM on T4 GPU (15GB VRAM)
+DEFAULT_BATCH_SIZE = 2
+
+
+def _resolve_positive_int_with_min(env_name: str, default: int, *, min_value: int) -> int:
+    value = _resolve_positive_int(env_name, default)
+    return max(int(min_value), int(value))
+
+
+DEFAULT_MAX_CONTEXT_CHUNKS = 4
+DEFAULT_MAX_CONTEXT_CHARS = 1200
+
+
+def _resolve_max_context_chunks() -> int:
+    return _resolve_positive_int_with_min("EVAL_MAX_CONTEXT_CHUNKS", DEFAULT_MAX_CONTEXT_CHUNKS, min_value=1)
+
+
+def _resolve_max_context_chars() -> int:
+    return _resolve_positive_int_with_min("EVAL_MAX_CONTEXT_CHARS", DEFAULT_MAX_CONTEXT_CHARS, min_value=200)
+
+
 def _resolve_run_config() -> RunConfig:
-    # Edit RUN_CONFIG_SETTINGS directly to change limits instead of using env vars.
-    return RunConfig(**RUN_CONFIG_SETTINGS)
+    # Allow users to override the most common limits via env vars.
+    config = dict(RUN_CONFIG_SETTINGS)
+    overrides = {
+        "max_workers": "RAGAS_MAX_WORKERS",
+        "timeout": "RAGAS_TIMEOUT",
+        "max_retries": "RAGAS_MAX_RETRIES",
+        "max_wait": "RAGAS_MAX_WAIT",
+    }
+    for attr, env_var in overrides.items():
+        value = _resolve_optional_positive_int(env_var)
+        if value is not None:
+            config[attr] = value
+    return RunConfig(**config)
+
+
+def _chunk_records(records, size):
+    for i in range(0, len(records), size):
+        yield records[i : i + size]
+
+
+def _resolve_eval_batch_size() -> int:
+    return _resolve_positive_int("EVAL_BATCH_SIZE", DEFAULT_BATCH_SIZE)
 
 # ==============================================================================
 # HÀM LÀM SẠCH VĂN BẢN (ULTRA-AGGRESSIVE CLEANING)
@@ -73,31 +145,33 @@ def clean_response_text(text: str) -> str:
         
     return text
 
+
 # ==============================================================================
 # PHẦN 1: MONKEY PATCH (VÁ LỖI MẤT CONTEXT)
 # ==============================================================================
 def patched_query(self, query_str, **kwargs):
     q = self._coerce_query_text(query_str)
     chunks = self._retrieve(q)
-    
+
     # Tạo source_nodes thủ công
     source_nodes = []
     for ch in chunks:
         node = TextNode(text=ch.text, metadata=ch.metadata, id_=ch.id)
         score = ch.score if ch.score is not None else 0.0
         source_nodes.append(NodeWithScore(node=node, score=score))
-    
+
     context = self._build_context(chunks)
-    
+
     if not context:
         return Response(response="Không tìm thấy dữ liệu.", source_nodes=source_nodes)
-        
+
     answer = self._answer(q, context)
     images_md = self._images_markdown(chunks)
     answer = self._inject_images_before_sources(answer, images_md)
-    
+
     # Trả về Response có chứa source_nodes
     return Response(response=answer, source_nodes=source_nodes)
+
 
 # Áp dụng bản vá
 print(">>> [Patch] Đang vá lỗi MedicalStoreQueryEngine...")
@@ -143,9 +217,11 @@ class RemoteJudgeChatLLM(BaseChatModel):
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         prompt = _messages_to_prompt(messages)
+        # RAGAS metrics generate long JSON (TP/FP/FN lists) - need more tokens
+        max_tokens = int(os.getenv("RAGAS_MAX_NEW_TOKENS") or os.getenv("LLM_MAX_NEW_TOKENS") or "2048")
         resp = self._remote.complete(
             prompt,
-            max_new_tokens=int(os.getenv("LLM_MAX_NEW_TOKENS") or "512"),
+            max_new_tokens=max_tokens,
             temperature=self._temperature,
         )
         text = getattr(resp, "text", None)
@@ -239,10 +315,7 @@ def main():
 
     query_engine = setup_proposed_system()
     
-    questions = []
-    answers = []
-    contexts = []
-    ground_truths = [] 
+    records = []
 
     print(f"\n>>> Đang chạy {len(test_data)} câu hỏi...")
     
@@ -265,7 +338,9 @@ def main():
         if len(clean_ans) > 4000:
              print("CẢNH BÁO: Text vẫn còn quá dài!")
 
-        # 3. Lấy Context
+        # 3. Lấy Context (giới hạn để prompt chấm điểm không bị quá dài)
+        max_ctx_chunks = _resolve_max_context_chunks()
+        max_ctx_chars = _resolve_max_context_chars()
         retrieved_ctx = []
         def get_nodes_recursive(resp):
             nodes = []
@@ -276,57 +351,121 @@ def main():
             return nodes
 
         raw_nodes = get_nodes_recursive(response_obj)
-        for node in raw_nodes:
+
+        def _node_score(n) -> float:
+            s = getattr(n, "score", None)
+            return float(s) if isinstance(s, (int, float)) else 0.0
+
+        seen = set()
+        for node in sorted(raw_nodes, key=_node_score, reverse=True):
             content = node.node.get_content() if hasattr(node, 'node') else node.get_content()
-            if len(content) > 2000:
-                content = content[:2000] + "..."
+            content = str(content or "").strip()
+            if not content:
+                continue
+            key = hash(content)
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(content) > max_ctx_chars:
+                content = content[:max_ctx_chars] + "..."
             retrieved_ctx.append(content)
+            if len(retrieved_ctx) >= max_ctx_chunks:
+                break
         
         print(f" -> Retrieved: {len(retrieved_ctx)} chunks context.")
 
-        questions.append(q)
-        answers.append(clean_ans) 
-        contexts.append(retrieved_ctx)
-        ground_truths.append(gt)
-        
-        time.sleep(1)  # Giảm sleep để tăng throughput
-
-    data_dict = {
-        "question": questions,
-        "answer": answers,
-        "contexts": contexts,
-        "ground_truth": ground_truths 
-    }
-    dataset = Dataset.from_dict(data_dict)
-
-    print("\n>>> Đang chấm điểm bằng RAGAS...")
-    
-    # RunConfig an toàn (cấu hình có thể tùy chỉnh qua biến ngữ cảnh)
-    my_run_config = _resolve_run_config()
-    print(f">>> RunConfig: max_workers={my_run_config.max_workers}, timeout={my_run_config.timeout}, max_retries={my_run_config.max_retries}, max_wait={my_run_config.max_wait}")
-
-    try:
-        results = evaluate(
-            dataset=dataset,
-            metrics=[context_recall, answer_correctness, faithfulness, answer_relevancy],
-            llm=judge_llm,
-            embeddings=eval_embeddings,
-            raise_exceptions=False,
-            run_config=my_run_config 
+        records.append(
+            {
+                "question": q,
+                "answer": clean_ans,
+                "contexts": retrieved_ctx,
+                "ground_truth": gt,
+            }
         )
-
-        print("\n>>> KẾT QUẢ:")
-        print(results)
         
-        # Lưu file an toàn (Tránh lỗi Permission Denied)
-        df = results.to_pandas()
-        base_filename = "evaluation_proposed_final.csv"
+        # Clear GPU memory after each query to prevent accumulation
+        _clear_gpu_memory()
         
-        df.to_csv(base_filename, index=False, encoding='utf-8-sig')
-        print(f">>> Đã lưu kết quả vào: {base_filename}")
+        # Avoid hammering the remote endpoint while keeping throughput reasonable.
+        time.sleep(0.3)
 
-    except Exception as e:
-        print(f"Lỗi khi chạy đánh giá: {e}")
+    print(f"\n>>> Thu thập xong {len(records)} câu trả lời hợp lệ.")
+
+    if not records:
+        raise ValueError("Không tìm thấy câu trả lời hợp lệ để chấm điểm.")
+
+    # Debug: print versions to make timeout tuning reproducible.
+    try:
+        import ragas as _ragas  # type: ignore
+        print(f">>> ragas version: {getattr(_ragas, '__version__', 'unknown')}")
+    except Exception:
+        pass
+    try:
+        import langchain as _lc  # type: ignore
+        print(f">>> langchain version: {getattr(_lc, '__version__', 'unknown')}")
+    except Exception:
+        pass
+
+    # =========================================================================
+    # SEQUENTIAL EVALUATION: Safe mode - 1 question at a time to prevent OOM
+    # =========================================================================
+    print(f"\n>>> Đang chấm điểm bằng RAGAS... (sequential mode - 1 câu/lần)")
+    my_run_config = _resolve_run_config()
+    print(
+        f">>> RunConfig: max_workers={my_run_config.max_workers}, timeout={my_run_config.timeout}, "
+        f"max_retries={my_run_config.max_retries}, max_wait={my_run_config.max_wait}"
+    )
+
+    all_results = []
+    total_questions = len(records)
+
+    for idx, record in enumerate(records, start=1):
+        print(f"\n>>> [{idx}/{total_questions}] {record['question'][:50]}...")
+        
+        # Clear GPU memory before each evaluation
+        _clear_gpu_memory()
+        
+        single_dataset = Dataset.from_dict(
+            {
+                "question": [record["question"]],
+                "answer": [record["answer"]],
+                "contexts": [record["contexts"]],
+                "ground_truth": [record["ground_truth"]],
+            }
+        )
+        
+        try:
+            results = evaluate(
+                dataset=single_dataset,
+                metrics=[context_recall, answer_correctness, faithfulness, answer_relevancy],
+                llm=judge_llm,
+                embeddings=eval_embeddings,
+                raise_exceptions=False,
+                run_config=my_run_config,
+            )
+            
+            print(f">>> Kết quả: {results}")
+            all_results.append(results.to_pandas())
+            
+        except Exception as e:
+            print(f">>> Lỗi câu hỏi {idx}: {e}")
+            # Continue to next question
+        
+        # Clear memory after each evaluation
+        _clear_gpu_memory()
+        
+        # Small delay between questions
+        time.sleep(0.5)
+
+    if not all_results:
+        print(">>> Không có kết quả nào để lưu.")
+        return
+
+    final_df = pd.concat(all_results, ignore_index=True)
+    base_filename = "evaluation_proposed_final.csv"
+    final_df.to_csv(base_filename, index=False, encoding="utf-8-sig")
+    print(f"\n>>> ✅ Hoàn thành! Đã xử lý {len(final_df)} câu hỏi.")
+    print(f">>> Đã lưu kết quả vào: {base_filename}")
 
 if __name__ == "__main__":
     main()

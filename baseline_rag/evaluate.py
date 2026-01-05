@@ -1,4 +1,5 @@
 import os
+import gc
 import time
 import json
 from pathlib import Path
@@ -18,13 +19,34 @@ from ragas.metrics import (
 
 
 RUN_CONFIG_SETTINGS = {
-    # Increase parallelism to evaluate multiple items concurrently.
-    "max_workers": 4,
-    # Keep a reasonable overall timeout per job (seconds).
-    "timeout": 600,
-    "max_retries": 2,
-    "max_wait": 30,
+    # Single worker to prevent OOM on T4 GPU
+    "max_workers": 1,
+    # Increased timeout for slow remote LLM calls
+    "timeout": 1800,
+    "max_retries": 3,
+    "max_wait": 60,
 }
+
+# Batch size for evaluation to prevent OOM
+DEFAULT_BATCH_SIZE = 3
+
+
+def _clear_gpu_memory():
+    """Clear GPU memory cache to prevent OOM."""
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except ImportError:
+        pass
+
+
+def _chunk_records(records, size):
+    """Split records into batches."""
+    for i in range(0, len(records), size):
+        yield records[i : i + size]
 
 
 def _resolve_run_config() -> RunConfig:
@@ -140,18 +162,30 @@ def main():
                     continue
         contexts.append(retrieved_texts)
 
-        time.sleep(1)  # Giảm sleep để tăng throughput
+        # Clear memory after each query to prevent accumulation
+        _clear_gpu_memory()
+        time.sleep(0.5)  # Small delay between queries
 
-    # Tạo Dataset đủ 4 cột: question, answer, contexts, ground_truth
-    data_dict = {
-        "question": questions,
-        "answer": answers,
-        "contexts": contexts,
-        "ground_truth": ground_truths 
-    }
-    dataset = Dataset.from_dict(data_dict)
+    # Build records for batch processing
+    records = []
+    for i in range(len(questions)):
+        records.append({
+            "question": questions[i],
+            "answer": answers[i],
+            "contexts": contexts[i],
+            "ground_truth": ground_truths[i],
+        })
 
-    print("\n>>> Đang chấm điểm bằng RAGAS...")
+    print(f"\n>>> Thu thập xong {len(records)} câu trả lời hợp lệ.")
+
+    if not records:
+        raise ValueError("Không tìm thấy câu trả lời hợp lệ để chấm điểm.")
+
+    # Batch processing to prevent OOM
+    batch_size = int(os.getenv("EVAL_BATCH_SIZE", DEFAULT_BATCH_SIZE))
+    batches = list(_chunk_records(records, batch_size))
+
+    print(f"\n>>> Đang chấm điểm bằng RAGAS... (chia {batch_size} mục mỗi lượt, tổng {len(batches)} batch)")
     
     metrics_list = [
         context_recall, 
@@ -163,20 +197,53 @@ def main():
     my_run_config = _resolve_run_config()
     print(f">>> RunConfig: max_workers={my_run_config.max_workers}, timeout={my_run_config.timeout}, max_retries={my_run_config.max_retries}, max_wait={my_run_config.max_wait}")
 
-    results = evaluate(
-        dataset=dataset,
-        metrics=metrics_list,
-        llm=judge_llm,
-        embeddings=eval_embeddings,
-        raise_exceptions=True,
-        run_config=my_run_config
-    )
+    all_results = []
+    for idx, batch in enumerate(batches, start=1):
+        print(f"\n>>> Batch {idx}/{len(batches)} ({len(batch)} câu hỏi)")
+        
+        # Clear memory before each batch
+        _clear_gpu_memory()
+        
+        batch_dataset = Dataset.from_dict(
+            {
+                "question": [r["question"] for r in batch],
+                "answer": [r["answer"] for r in batch],
+                "contexts": [r["contexts"] for r in batch],
+                "ground_truth": [r["ground_truth"] for r in batch],
+            }
+        )
+        
+        try:
+            results = evaluate(
+                dataset=batch_dataset,
+                metrics=metrics_list,
+                llm=judge_llm,
+                embeddings=eval_embeddings,
+                raise_exceptions=False,  # Don't crash on single batch failure
+                run_config=my_run_config
+            )
+            print(f">>> Batch {idx} kết quả:")
+            print(results)
+            all_results.append(results.to_pandas())
+        except Exception as e:
+            print(f">>> Lỗi khi chạy batch {idx}: {e}")
+            continue
+        
+        # Clear memory after each batch
+        _clear_gpu_memory()
+        
+        # Small delay between batches to let GPU cool down
+        time.sleep(1)
 
-    print("\n>>> KẾT QUẢ ĐÁNH GIÁ:")
-    print(results)
+    if not all_results:
+        print(">>> Không có kết quả nào để lưu do tất cả các batch đều lỗi.")
+        return
+
+    print("\n>>> KẾT QUẢ ĐÁNH GIÁ TỔNG HỢP:")
+    final_df = pd.concat(all_results, ignore_index=True)
+    print(final_df)
     
-    df_results = results.to_pandas()
-    df_results.to_csv("ragas_evaluation.csv", index=False, encoding='utf-8-sig')
+    final_df.to_csv("ragas_evaluation.csv", index=False, encoding='utf-8-sig')
     print(">>> Đã lưu báo cáo.")
 
 if __name__ == "__main__":
