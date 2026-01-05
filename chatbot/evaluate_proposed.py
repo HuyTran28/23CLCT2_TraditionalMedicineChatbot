@@ -27,7 +27,7 @@ from ragas.metrics import (
 
 RUN_CONFIG_SETTINGS = {
     # Increase parallelism to evaluate multiple items concurrently.
-    "max_workers": 4,
+    "max_workers": 2,
     # Keep a reasonable overall timeout per job (seconds).
     "timeout": 600,
     "max_retries": 2,
@@ -218,12 +218,11 @@ def setup_proposed_system():
         backend="disk"
     )
 
-    # Giảm top_k
     router = build_router_query_engine(
         vector_store=vs,
         llm=llm,
-        herbs_top_k=2,       
-        diseases_top_k=2,    
+        herbs_top_k=3,       
+        diseases_top_k=3,    
         emergency_top_k=2,   
         verbose=True
     )
