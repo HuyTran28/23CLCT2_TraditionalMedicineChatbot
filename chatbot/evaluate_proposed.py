@@ -27,7 +27,7 @@ from ragas.metrics import (
 
 RUN_CONFIG_SETTINGS = {
     # Increase parallelism to evaluate multiple items concurrently.
-    "max_workers": 2,
+    "max_workers": 4,
     # Keep a reasonable overall timeout per job (seconds).
     "timeout": 600,
     "max_retries": 2,
