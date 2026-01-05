@@ -69,12 +69,24 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
             )
         return out
 
-    def _build_context(self, chunks: List[RetrievedChunk]) -> str:
+    def _build_context(self, chunks: List[RetrievedChunk] | List[Dict[str, Any]]) -> str:
         parts: List[str] = []
         for i, ch in enumerate(chunks, start=1):
-            source = ch.metadata.get("source_path") or ch.metadata.get("source") or ""
-            idx = ch.metadata.get("chunk_index")
-            rid = ch.id
+            # Handle both RetrievedChunk objects and raw dicts from vector_store.query
+            if hasattr(ch, "metadata"):
+                meta = ch.metadata
+                text = ch.text
+                rid = ch.id
+                score = getattr(ch, "score", None)
+            else:
+                meta = ch.get("metadata", {})
+                text = ch.get("document", "")
+                rid = ch.get("id", "")
+                score = ch.get("score")
+
+            source = meta.get("source_path") or meta.get("source") or ""
+            idx = meta.get("chunk_index")
+            
             header_bits = [f"#{i}"]
             if rid:
                 header_bits.append(f"id={rid}")
@@ -82,10 +94,25 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
                 header_bits.append(f"source={source}")
             if idx is not None:
                 header_bits.append(f"chunk={idx}")
-            if ch.score is not None:
-                header_bits.append(f"score={ch.score:.4f}")
+            if score is not None:
+                header_bits.append(f"score={score:.4f}")
             header = " ".join(header_bits)
-            parts.append(f"{header}\n{ch.text}")
+
+            # Include metadata fields that might be missing from the formatted text
+            # but are present in the raw data.
+            meta_lines = []
+            for k in ["chemical_composition", "scientific_name", "family", "other_names"]:
+                val = meta.get(k)
+                if val:
+                    if isinstance(val, list):
+                        val = ", ".join(str(v) for v in val)
+                    meta_lines.append(f"{k}: {val}")
+
+            content = text
+            if meta_lines:
+                content = "\n".join(meta_lines) + "\n" + content
+
+            parts.append(f"{header}\n{content}")
         return "\n\n---\n\n".join(parts).strip()
 
     def _answer(self, query: Any, context: str) -> str:
@@ -102,6 +129,7 @@ class MedicalStoreQueryEngine(BaseQueryEngine):
             f"CÂU HỎI: {query_s}\n\n"
             "YÊU CẦU:\n"
             "- Trả lời bằng tiếng Việt.\n"
+            "- CHỈ sử dụng thông tin từ NGỮ CẢNH trên. KHÔNG dùng kiến thức bên ngoài.\n"
             "- Nếu là câu hỏi về đặc điểm cây, ưu tiên thông tin từ phần 'Features:' (botanical_features).\n"
             "- Nếu có thể, kết thúc bằng 1 dòng 'Nguồn:' liệt kê id hoặc source đã dùng.\n"
         )

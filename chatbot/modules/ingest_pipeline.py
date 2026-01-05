@@ -352,6 +352,7 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
         other = data.get("other_names") or []
         sci = data.get("scientific_name") or ""
         family = data.get("family") or ""
+        chem = data.get("chemical_composition") or ""
         feats = data.get("botanical_features") or data.get("botanical_description") or ""
         dist = data.get("distribution_and_ecology") or ""
         props = data.get("properties_and_dosage") or data.get("properties") or data.get("medicinal_properties") or ""
@@ -374,6 +375,8 @@ def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
             out.append(f"Tên khoa học: {sci}")
         if family:
             out.append(f"Họ: {family}")
+        if chem:
+            out.append(f"Thành phần hóa học: {chem}")
         if feats:
             out.append(f"Đặc điểm thực vật: {feats}")
         if dist:
