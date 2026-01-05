@@ -39,8 +39,10 @@ Groq rate limits (429 Too Many Requests):
 -- Use `--rpm` to keep a safe request rate (the pipeline sleeps between calls).
 -- For Groq free plan, start with `--rpm 2`.
 -- You can still see 429s even under RPM if you hit the tokens-per-minute (TPM) limit; lower `--rpm` further (e.g. `--rpm 1`).
+Recommended free-tier extraction settings: `--model llama-3.1-8b-instant --max-retry-after-seconds 120`.
 - If you hit tokens-per-day (TPD) limits (errors like "tokens per day (TPD)" and very large `Retry-After`), switch to a higher-quota model (recommended: `llama-3.1-8b-instant`) or wait for reset.
 - Recommended free-tier extraction settings: `--model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120`.
+py main.py ingest --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/herbs_plants_cay-canh.jsonl
 - If Groq returns HTTP 429, the extractor retries automatically.
 	- If `Retry-After` header is present, it sleeps exactly that many seconds.
 	- Otherwise it uses exponential backoff with jitter.
@@ -69,7 +71,38 @@ These commands produce one JSON object per line in `../data/processed/*.jsonl`.
 ```powershell
 $env:GROQ_API_KEY = "..."
 py main.py ingest --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-output-tokens 1024 --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/herbs_plants_cay-canh.jsonl --resume
+py main.py ingest --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md --schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only --model llama-3.1-8b-instant --max-retry-after-seconds 120 --rpm 2 --enrich-images --image-store-dir ../data/processed/images --jsonl-out ../data/processed/herbs_plants_cay-canh.jsonl --resume
 ```
+
+### Alternative: run extractor with self-host LLM (Colab/ngrok)
+
+If you run the small Colab LLM server and expose it via ngrok, you can use that self-hosted judge instead of Groq. Since the self-host server no longer limits rate or tokens, you can safely switch to larger Qwen models and higher RPM values.
+
+1. Start the Colab server from `colab_llm_server.ipynb` and copy the printed `LLM_API_BASE` URL.
+2. In PowerShell set the environment variable locally (or add it to `.env` under repo root):
+
+```powershell
+$env:LLM_API_BASE = "https://<paste-from-colab>"
+# If you enabled API key protection on Colab, also set:
+$env:LLM_API_KEY = "<token>"
+```
+
+3. Run the extractor with the `--use-remote-llm` flag (the `main.py ingest` CLI supports using the self-host LLM when this flag is provided). Example:
+
+```powershell
+py main.py ingest --input ../data/raw/cay-canh--cay-thuoc-trong-nha-truong/cay-canh--cay-thuoc-trong-nha-truong.md \
+	--schema MedicinalPlant --chunk-by book --index-type herbs_plants --extract --extract-only \
+	--use-remote-llm --model Qwen/Qwen2.5-14B-Instruct --rpm 60 \
+	--jsonl-out ../data/processed/herbs_plants_cay-canh_remote.jsonl --enrich-images --image-store-dir ../data/processed/images
+```
+
+
+Notes:
+- `--use-remote-llm` tells the pipeline to prefer the self-host LLM (`LLM_API_BASE`) instead of Groq. If `--use-remote-llm` is not provided and `LLM_API_BASE` is set, the extractor will auto-select the remote backend.
+- The Colab self-host server in this repo is configured to use `Qwen/Qwen2.5-7B-Instruct` by default; prefer that model when targeting the self-host LLM.
+- Increase `--rpm` (requests per minute) with caution — the Colab server may be slower than Groq and has its own resource limits.
+- If you protected the Colab server with `LLM_API_KEY`, ensure the same token is set locally in `LLM_API_KEY` so requests are authorized.
+
 
 **Book: Cây cảnh – cây thuốc trong nhà trường (recipes)**
 - schema: `RemedyRecipe`

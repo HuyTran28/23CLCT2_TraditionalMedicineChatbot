@@ -35,7 +35,7 @@ def _load_generator():
     model_id = (
         (os.getenv("HF_MODEL") or "").strip()
         or (os.getenv("MODEL_ID") or "").strip()
-        or "Qwen/Qwen2.5-7B-Instruct"
+        or "Qwen/Qwen2.5-14B-Instruct"
     )
     device_map = (os.getenv("HF_DEVICE_MAP") or "auto").strip() or "auto"
     use_4bit = _env_bool("LOAD_IN_4BIT", False)

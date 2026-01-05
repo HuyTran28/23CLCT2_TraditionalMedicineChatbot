@@ -27,6 +27,17 @@ Or run the web UI:
 ```powershell
 uvicorn chatbot.webapp:app --reload
 ```
+
+### Tuning the RAGAS evaluation scripts
+
+Both `chatbot/evaluate_proposed.py` and `baseline_rag/evaluate.py` declare `RUN_CONFIG_SETTINGS` at the top of each file. Edit that dictionary directly if you want to raise `timeout`, increase `max_workers`, or tweak the retry behavior before rerunning the script. (Defaults: `max_workers=1`, `timeout=600`, `max_retries=3`, `max_wait=60`.)
+
+After editing, rerun either script normally:
+
+```powershell
+python chatbot/evaluate_proposed.py
+```
+
 # Document OCR & Conversion Pipeline
 
 This repository provides a modern pipeline for converting PDF documents to Word format using state-of-the-art OCR techniques. It supports both scanned and digital PDFs, leveraging marker-pdf for Vietnamese text recognition with superior accuracy.

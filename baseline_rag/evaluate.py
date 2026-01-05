@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import pandas as pd
 from datasets import Dataset 
-from ragas import evaluate
+from ragas import evaluate, RunConfig
 from naive_rag import NaiveMedicalRAG
 
 from remote_llm_adapters import RemoteJudgeChatLLM
@@ -15,6 +15,21 @@ from ragas.metrics import (
     context_recall, 
     answer_correctness
 )
+
+
+RUN_CONFIG_SETTINGS = {
+    # Increase parallelism to evaluate multiple items concurrently.
+    "max_workers": 4,
+    # Keep a reasonable overall timeout per job (seconds).
+    "timeout": 600,
+    "max_retries": 2,
+    "max_wait": 30,
+}
+
+
+def _resolve_run_config() -> RunConfig:
+    # Adjust RUN_CONFIG_SETTINGS directly in this file for new limits.
+    return RunConfig(**RUN_CONFIG_SETTINGS)
 
 # --- CẤU HÌNH ---
 # Danh sách file Markdown đầu vào (moved to chatbot/data/raw)
@@ -125,7 +140,7 @@ def main():
                     continue
         contexts.append(retrieved_texts)
 
-        time.sleep(5)  # Giữ khoảng cách giữa các câu hỏi
+        time.sleep(1)  # Giảm sleep để tăng throughput
 
     # Tạo Dataset đủ 4 cột: question, answer, contexts, ground_truth
     data_dict = {
@@ -145,12 +160,16 @@ def main():
         answer_relevancy
     ]
 
+    my_run_config = _resolve_run_config()
+    print(f">>> RunConfig: max_workers={my_run_config.max_workers}, timeout={my_run_config.timeout}, max_retries={my_run_config.max_retries}, max_wait={my_run_config.max_wait}")
+
     results = evaluate(
         dataset=dataset,
         metrics=metrics_list,
         llm=judge_llm,
         embeddings=eval_embeddings,
-        raise_exceptions=False 
+        raise_exceptions=True,
+        run_config=my_run_config
     )
 
     print("\n>>> KẾT QUẢ ĐÁNH GIÁ:")

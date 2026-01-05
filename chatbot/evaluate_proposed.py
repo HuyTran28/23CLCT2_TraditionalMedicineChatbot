@@ -3,6 +3,7 @@ import time
 import re
 import pandas as pd
 from pathlib import Path
+from dotenv import load_dotenv
 from datasets import Dataset 
 from ragas import evaluate, RunConfig 
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -14,12 +15,29 @@ from modules.router_engine import build_router_query_engine, MedicalStoreQueryEn
 from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.core.base.response.schema import Response
 from modules.remote_llm import RemoteLLM
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from ragas.metrics import (
     faithfulness, 
     answer_relevancy, 
     context_recall, 
     answer_correctness
 )
+
+
+RUN_CONFIG_SETTINGS = {
+    # Increase parallelism to evaluate multiple items concurrently.
+    "max_workers": 4,
+    # Keep a reasonable overall timeout per job (seconds).
+    "timeout": 600,
+    "max_retries": 2,
+    "max_wait": 30,
+}
+
+
+def _resolve_run_config() -> RunConfig:
+    # Edit RUN_CONFIG_SETTINGS directly to change limits instead of using env vars.
+    return RunConfig(**RUN_CONFIG_SETTINGS)
 
 # ==============================================================================
 # HÀM LÀM SẠCH VĂN BẢN (ULTRA-AGGRESSIVE CLEANING)
@@ -87,7 +105,7 @@ MedicalStoreQueryEngine._query = patched_query
 
 # ==============================================================================
 # --- PHẦN 2: REMOTE-ONLY ---
-# Script này chỉ hỗ trợ self-host/remote LLM qua LLM_API_BASE (không có fallback Groq).
+# Script này chỉ hỗ trợ self-host/remote LLM qua LLM_API_BASE.
 
 # --- Remote judge adapter (LangChain) ---
 try:
@@ -138,7 +156,7 @@ class RemoteJudgeChatLLM(BaseChatModel):
 
 # --- CẤU HÌNH ---
 PROPOSED_EMBED_MODEL = "BAAI/bge-m3" 
-VECTOR_DB_DIR = "vector_data"
+VECTOR_DB_DIR = Path(__file__).resolve().parent / "vector_data"
 
 if not (os.getenv("LLM_API_BASE") or "").strip():
     raise RuntimeError(
@@ -147,7 +165,7 @@ if not (os.getenv("LLM_API_BASE") or "").strip():
 
 # Setup Embedding (CPU)
 print(">>> Đang load model Embedding đánh giá...")
-EVAL_EMBED_MODEL = os.getenv("EVAL_EMBED_MODEL", "intfloat/multilingual-e5-small")
+EVAL_EMBED_MODEL = os.getenv("EVAL_EMBED_MODEL", "BAAI/bge-m3").strip()
 eval_embeddings = HuggingFaceEmbeddings(
     model_name=EVAL_EMBED_MODEL,
     model_kwargs={"device": "cpu"},
@@ -212,7 +230,7 @@ def setup_proposed_system():
     return router
 
 def main():
-    if not os.path.exists(VECTOR_DB_DIR):
+    if not VECTOR_DB_DIR.exists():
         raise FileNotFoundError(f"Chưa thấy folder '{VECTOR_DB_DIR}'!")
 
     test_csv = Path(__file__).resolve().parent.parent / "baseline_rag" / "test.csv"
@@ -272,7 +290,7 @@ def main():
         contexts.append(retrieved_ctx)
         ground_truths.append(gt)
         
-        time.sleep(5)  # Giữ khoảng cách giữa các câu hỏi
+        time.sleep(1)  # Giảm sleep để tăng throughput
 
     data_dict = {
         "question": questions,
@@ -284,13 +302,9 @@ def main():
 
     print("\n>>> Đang chấm điểm bằng RAGAS...")
     
-    # RunConfig an toàn
-    my_run_config = RunConfig(
-        max_workers=1,      
-        timeout=180,        
-        max_retries=3,      
-        max_wait=60         
-    )
+    # RunConfig an toàn (cấu hình có thể tùy chỉnh qua biến ngữ cảnh)
+    my_run_config = _resolve_run_config()
+    print(f">>> RunConfig: max_workers={my_run_config.max_workers}, timeout={my_run_config.timeout}, max_retries={my_run_config.max_retries}, max_wait={my_run_config.max_wait}")
 
     try:
         results = evaluate(

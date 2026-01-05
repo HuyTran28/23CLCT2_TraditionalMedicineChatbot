@@ -3,17 +3,22 @@ import os
 import re
 import time
 import random
-from typing import Type, TypeVar, List, Optional, Any
+from pathlib import Path
+from typing import Type, TypeVar, List, Optional, Any, Literal
+
 from pydantic import BaseModel, ValidationError
 import logging
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from repo root (.env)
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-# LlamaIndex imports
+# LlamaIndex imports (Groq backend)
 from llama_index.core.program import LLMTextCompletionProgram
 from llama_index.llms.groq import Groq
+
+# Self-host backend
+from modules.remote_llm import RemoteLLM
 
 # Book-aware splitting for extraction boundaries
 from modules.book_splitters import split_by_book
@@ -27,6 +32,29 @@ ModelT = TypeVar('ModelT', bound=BaseModel)
 
 class RateLimitPauseRequired(RuntimeError):
     """Raised when Groq asks us to wait a long time (e.g., TPD exhaustion)."""
+
+
+def _strip_code_fences(s: str) -> str:
+    s2 = (s or "").strip()
+    if s2.startswith("```"):
+        s2 = re.sub(r"^```[a-zA-Z0-9_\-]*\n", "", s2)
+        s2 = re.sub(r"\n```\s*$", "", s2)
+    return s2.strip()
+
+
+def _extract_first_json_object(text: str) -> str:
+    """Best-effort: extract the first {...} JSON object from model output."""
+    s = _strip_code_fences(text)
+    if not s:
+        return ""
+    start = s.find("{")
+    if start < 0:
+        return s
+    # Greedy to last closing brace; good enough for single-object JSON.
+    end = s.rfind("}")
+    if end > start:
+        return s[start : end + 1].strip()
+    return s[start:].strip()
 
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
@@ -167,6 +195,7 @@ class MedicalDataExtractor:
     def __init__(
         self,
         api_key: Optional[str] = None,
+        backend: Literal["auto", "groq", "remote"] = "auto",
         model: str = "llama-3.3-70b-versatile",
         temperature: float = 0.0,
         max_tokens: int = 1024,
@@ -181,6 +210,7 @@ class MedicalDataExtractor:
         
         Args:
             api_key: Groq API key (defaults to GROQ_API_KEY env var)
+            backend: "auto" (prefer self-host if LLM_API_BASE is set), "groq", or "remote"
             model: Groq model name (llama-3.3-70b-versatile is fastest)
             temperature: 0.0 for deterministic medical extraction
             retry_count: How many times to retry on JSON errors
@@ -188,22 +218,38 @@ class MedicalDataExtractor:
             rate_limit_base_sleep_seconds: Base sleep when 429 has no Retry-After header
             rate_limit_max_sleep_seconds: Cap for exponential backoff sleeps
         """
-        self.api_key = api_key or os.getenv("GROQ_API_KEY")
-        if not self.api_key:
-            raise ValueError("GROQ_API_KEY environment variable not set")
-        
-        self.llm = Groq(
-            api_key=self.api_key,
-            model=model,
-            temperature=temperature,
-            max_tokens=int(max_tokens),
-        )
+        self.backend = backend
+        self.temperature = float(temperature)
+        self.max_tokens = int(max_tokens)
+
+        api_base = (os.getenv("LLM_API_BASE") or "").strip()
+        groq_key = (api_key or os.getenv("GROQ_API_KEY") or "").strip()
+
+        if backend == "remote" or (backend == "auto" and api_base):
+            if not api_base:
+                raise ValueError("LLM_API_BASE environment variable not set (required for remote backend)")
+            self.remote = RemoteLLM.from_env()
+            self.llm = None
+            self.api_key = None
+            logger.info("Initialized Remote LLM (self-host): %s", api_base)
+        else:
+            self.api_key = groq_key or None
+            if not self.api_key:
+                raise ValueError("GROQ_API_KEY environment variable not set (required for groq backend)")
+            self.llm = Groq(
+                api_key=self.api_key,
+                model=model,
+                temperature=self.temperature,
+                max_tokens=int(self.max_tokens),
+            )
+            self.remote = None
         self.retry_count = retry_count
         self.rate_limit_retries = max(0, int(rate_limit_retries))
         self.rate_limit_base_sleep_seconds = max(0.0, float(rate_limit_base_sleep_seconds))
         self.rate_limit_max_sleep_seconds = max(0.0, float(rate_limit_max_sleep_seconds))
         self.rate_limit_max_retry_after_seconds = max(0.0, float(rate_limit_max_retry_after_seconds))
-        logger.info(f"Initialized Groq LLM: {model}")
+        if self.llm is not None:
+            logger.info(f"Initialized Groq LLM: {model}")
     
     def extract_single(
         self,
@@ -267,24 +313,49 @@ Schema JSON:
         rate_attempt = 0
         while True:
             try:
-                program = LLMTextCompletionProgram.from_defaults(
-                    output_cls=schema,
-                    prompt_template_str=prompt_template,
-                    llm=self.llm,
-                    verbose=False
-                )
+                if self.remote is not None:
+                    prompt = prompt_template.format(text=cleaned_text)
+                    resp = self.remote.complete(
+                        prompt,
+                        max_new_tokens=int(self.max_tokens),
+                        temperature=float(self.temperature),
+                    )
+                    raw = getattr(resp, "text", "")
+                    json_str = _extract_first_json_object(str(raw))
+                    # Pydantic v2: validate directly from JSON string.
+                    result = schema.model_validate_json(json_str)
+                else:
+                    program = LLMTextCompletionProgram.from_defaults(
+                        output_cls=schema,
+                        prompt_template_str=prompt_template,
+                        llm=self.llm,
+                        verbose=False
+                    )
+                    result = program(text=cleaned_text)
 
-                result = program(text=cleaned_text)
                 result = _clean_model_instance(result)
                 logger.info("✓ Extraction successful")
                 return result
                 
             except json.JSONDecodeError as e:
                 json_attempt += 1
-                logger.warning(f"✗ JSON parsing failed (attempt {json_attempt}): {str(e)[:100]}")
+                logger.warning(f"JSON parsing failed (attempt {json_attempt}): {str(e)[:100]}")
                 if json_attempt >= self.retry_count:
                     raise ValueError(f"Failed to extract after {self.retry_count} JSON attempts") from e
                 continue
+
+            except ValueError as e:
+                # model_validate_json raises ValueError on invalid JSON
+                msg = str(e) or ""
+                if "json" in msg.lower():
+                    json_attempt += 1
+                    logger.warning(f"JSON parsing failed (attempt {json_attempt}): {msg[:160]}")
+                    if json_attempt >= self.retry_count:
+                        raise ValueError(
+                            f"Failed to extract after {self.retry_count} JSON attempts"
+                        ) from e
+                    continue
+                raise
 
             except ValidationError as e:
                 # LlamaIndex often wraps JSON parse failures as Pydantic validation errors
