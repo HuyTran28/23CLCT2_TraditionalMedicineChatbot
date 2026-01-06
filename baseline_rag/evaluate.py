@@ -27,9 +27,6 @@ RUN_CONFIG_SETTINGS = {
     "max_wait": 60,
 }
 
-# Batch size for evaluation to prevent OOM
-DEFAULT_BATCH_SIZE = 3
-
 
 def _clear_gpu_memory():
     """Clear GPU memory cache to prevent OOM."""
@@ -41,12 +38,6 @@ def _clear_gpu_memory():
             torch.cuda.synchronize()
     except ImportError:
         pass
-
-
-def _chunk_records(records, size):
-    """Split records into batches."""
-    for i in range(0, len(records), size):
-        yield records[i : i + size]
 
 
 def _resolve_run_config() -> RunConfig:
@@ -181,11 +172,10 @@ def main():
     if not records:
         raise ValueError("Không tìm thấy câu trả lời hợp lệ để chấm điểm.")
 
-    # Batch processing to prevent OOM
-    batch_size = int(os.getenv("EVAL_BATCH_SIZE", DEFAULT_BATCH_SIZE))
-    batches = list(_chunk_records(records, batch_size))
-
-    print(f"\n>>> Đang chấm điểm bằng RAGAS... (chia {batch_size} mục mỗi lượt, tổng {len(batches)} batch)")
+    # =========================================================================
+    # SEQUENTIAL EVALUATION: Safe mode - 1 question at a time to prevent OOM
+    # =========================================================================
+    print(f"\n>>> Đang chấm điểm bằng RAGAS... (sequential mode)")
     
     metrics_list = [
         context_recall, 
@@ -198,45 +188,46 @@ def main():
     print(f">>> RunConfig: max_workers={my_run_config.max_workers}, timeout={my_run_config.timeout}, max_retries={my_run_config.max_retries}, max_wait={my_run_config.max_wait}")
 
     all_results = []
-    for idx, batch in enumerate(batches, start=1):
-        print(f"\n>>> Batch {idx}/{len(batches)} ({len(batch)} câu hỏi)")
+    total_questions = len(records)
+
+    for idx, record in enumerate(records, start=1):
+        print(f"\n>>> [{idx}/{total_questions}] {record['question'][:50]}...")
         
-        # Clear memory before each batch
+        # Clear memory before each evaluation
         _clear_gpu_memory()
         
-        batch_dataset = Dataset.from_dict(
+        single_dataset = Dataset.from_dict(
             {
-                "question": [r["question"] for r in batch],
-                "answer": [r["answer"] for r in batch],
-                "contexts": [r["contexts"] for r in batch],
-                "ground_truth": [r["ground_truth"] for r in batch],
+                "question": [record["question"]],
+                "answer": [record["answer"]],
+                "contexts": [record["contexts"]],
+                "ground_truth": [record["ground_truth"]],
             }
         )
         
         try:
             results = evaluate(
-                dataset=batch_dataset,
+                dataset=single_dataset,
                 metrics=metrics_list,
                 llm=judge_llm,
                 embeddings=eval_embeddings,
-                raise_exceptions=False,  # Don't crash on single batch failure
+                raise_exceptions=False,  # Don't crash on single question failure
                 run_config=my_run_config
             )
-            print(f">>> Batch {idx} kết quả:")
-            print(results)
+            print(f">>> Kết quả: {results}")
             all_results.append(results.to_pandas())
         except Exception as e:
-            print(f">>> Lỗi khi chạy batch {idx}: {e}")
-            continue
+            print(f">>> Lỗi câu hỏi {idx}: {e}")
+            # Continue to next question
         
-        # Clear memory after each batch
+        # Clear memory after each evaluation
         _clear_gpu_memory()
         
-        # Small delay between batches to let GPU cool down
-        time.sleep(1)
+        # Small delay between questions
+        time.sleep(0.5)
 
     if not all_results:
-        print(">>> Không có kết quả nào để lưu do tất cả các batch đều lỗi.")
+        print(">>> Không có kết quả nào để lưu.")
         return
 
     print("\n>>> KẾT QUẢ ĐÁNH GIÁ TỔNG HỢP:")
