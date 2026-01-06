@@ -2,6 +2,9 @@ import os
 import gc
 import time
 import re
+import json
+import signal
+import sys
 import pandas as pd
 from pathlib import Path
 from dotenv import load_dotenv
@@ -27,25 +30,55 @@ from ragas.metrics import (
 
 
 RUN_CONFIG_SETTINGS = {
-    # Remote judge calls are slow; parallelism easily triggers timeouts.
+    # Single worker to prevent OOM on T4 GPU
     "max_workers": 1,
-    # Per-job timeout (seconds). 600s = 10 min per question should be plenty.
-    "timeout": 600,
-    "max_retries": 3,
-    "max_wait": 60,
+    # Generous timeout for slow remote LLM calls (30 min per metric)
+    "timeout": 1800,
+    # Conservative retries to avoid getting stuck
+    "max_retries": 2,
+    # Shorter wait between retries
+    "max_wait": 30
 }
+
+# Results file path
+RESULTS_FILE = Path(__file__).resolve().parent / "evaluation_proposed_final.csv"
+
+# Global flag for graceful shutdown
+_shutdown_requested = False
+
+
+def _signal_handler(signum, frame):
+    """Handle interrupt signals for graceful shutdown."""
+    global _shutdown_requested
+    print("\n>>> Nhận tín hiệu dừng! Sẽ lưu kết quả hiện tại...")
+    _shutdown_requested = True
 
 
 def _clear_gpu_memory():
-    """Clear GPU memory cache to prevent OOM on T4."""
-    gc.collect()
+    """Clear GPU memory cache aggressively to prevent OOM on T4."""
+    # Force Python garbage collection first
+    for _ in range(3):
+        gc.collect()
+    
     try:
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
-    except ImportError:
+            # Additional cleanup for T4 GPU
+            if hasattr(torch.cuda, 'memory_stats'):
+                torch.cuda.reset_peak_memory_stats()
+            # Also clear any gradients
+            torch.cuda.ipc_collect()
+    except (ImportError, AttributeError):
         pass
+    
+    # Final garbage collection
+    for _ in range(2):
+        gc.collect()
+    
+    # Short sleep to allow OS to reclaim memory
+    time.sleep(0.1)
 
 
 def _resolve_optional_positive_int(env_name: str) -> int | None:
@@ -101,6 +134,16 @@ def _resolve_run_config() -> RunConfig:
         if value is not None:
             config[attr] = value
     return RunConfig(**config)
+
+
+def _save_results(all_results: list, filename: Path = RESULTS_FILE):
+    """Save current results to CSV."""
+    if all_results:
+        df = pd.concat(all_results, ignore_index=True)
+        df.to_csv(filename, index=False, encoding='utf-8-sig')
+        print(f">>> Đã lưu {len(df)} kết quả vào {filename}")
+        return df
+    return None
 
 
 def _chunk_records(records, size):
@@ -305,6 +348,15 @@ def setup_proposed_system():
     return router
 
 def main():
+    global _shutdown_requested
+    
+    # Register signal handlers for graceful shutdown
+    try:
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
+    except Exception:
+        pass  # May fail on some platforms
+    
     if not VECTOR_DB_DIR.exists():
         raise FileNotFoundError(f"Chưa thấy folder '{VECTOR_DB_DIR}'!")
 
@@ -320,6 +372,10 @@ def main():
     print(f"\n>>> Đang chạy {len(test_data)} câu hỏi...")
     
     for item in test_data:
+        if _shutdown_requested:
+            print(">>> Dừng thu thập dữ liệu...")
+            break
+            
         q = item["question"]
         gt = item["ground_truth"]
         
@@ -407,9 +463,9 @@ def main():
         pass
 
     # =========================================================================
-    # SEQUENTIAL EVALUATION: Safe mode - 1 question at a time to prevent OOM
+    # SEQUENTIAL EVALUATION with EARLY STOP SAVE
     # =========================================================================
-    print(f"\n>>> Đang chấm điểm bằng RAGAS... (sequential mode - 1 câu/lần)")
+    print(f"\n>>> Đang chấm điểm bằng RAGAS... (sequential mode)")
     my_run_config = _resolve_run_config()
     print(
         f">>> RunConfig: max_workers={my_run_config.max_workers}, timeout={my_run_config.timeout}, "
@@ -420,6 +476,12 @@ def main():
     total_questions = len(records)
 
     for idx, record in enumerate(records, start=1):
+        # Check for shutdown request (Ctrl+C)
+        if _shutdown_requested:
+            print(f"\n>>> Đã dừng tại câu {idx}. Đang lưu kết quả...")
+            _save_results(all_results)
+            break
+        
         print(f"\n>>> [{idx}/{total_questions}] {record['question'][:50]}...")
         
         # Clear GPU memory before each evaluation
@@ -447,25 +509,47 @@ def main():
             print(f">>> Kết quả: {results}")
             all_results.append(results.to_pandas())
             
-        except Exception as e:
+            # Save incrementally after each successful evaluation
+            _save_results(all_results)
+            
+        except (MemoryError, RuntimeError) as e:
+            error_str = str(e).lower()
+            if "out of memory" in error_str or "oom" in error_str:
+                print(f">>> OOM tại câu {idx}! Đang lưu kết quả...")
+                _save_results(all_results)
+                raise
             print(f">>> Lỗi câu hỏi {idx}: {e}")
+            # Continue to next question
+        except Exception as e:
+            error_msg = str(e)
+            print(f">>> Lỗi câu hỏi {idx}: {error_msg[:200]}")
+            if "404" in error_msg:
+                print("Hint: Remote trả 404 cho /v1/complete. Thường là LLM_API_BASE đang trỏ sai ngrok URL (tunnel đã đổi) hoặc server Colab đã dừng.")
             # Continue to next question
         
         # Clear memory after each evaluation
         _clear_gpu_memory()
         
-        # Small delay between questions
-        time.sleep(0.5)
+        # Check shutdown again after evaluation
+        if _shutdown_requested:
+            print(f"\n>>> Đã dừng sau câu {idx}. Đang lưu kết quả...")
+            _save_results(all_results)
+            break
+        
+        # Delay between questions for stability
+        time.sleep(1.0)
 
     if not all_results:
         print(">>> Không có kết quả nào để lưu.")
         return
 
     final_df = pd.concat(all_results, ignore_index=True)
-    base_filename = "evaluation_proposed_final.csv"
-    final_df.to_csv(base_filename, index=False, encoding="utf-8-sig")
+    
+    # Save final results
+    final_df.to_csv(RESULTS_FILE, index=False, encoding="utf-8-sig")
+    print(f">>> Đã lưu kết quả vào: {RESULTS_FILE}")
+    
     print(f"\n>>> ✅ Hoàn thành! Đã xử lý {len(final_df)} câu hỏi.")
-    print(f">>> Đã lưu kết quả vào: {base_filename}")
 
 if __name__ == "__main__":
     main()
