@@ -69,7 +69,7 @@ def _clear_gpu_memory():
         gc.collect()
     
     # Short sleep to allow OS to reclaim memory
-    time.sleep(0.1)
+    time.sleep(0.3)
 
 
 def _save_results(all_results: list, filename: Path = RESULTS_FILE):
@@ -312,7 +312,7 @@ def main():
             break
         
         # Delay between questions for stability
-        time.sleep(1.0)
+        time.sleep(0.3)
 
     if not all_results:
         print(">>> Không có kết quả nào để lưu.")

@@ -78,7 +78,7 @@ def _clear_gpu_memory():
         gc.collect()
     
     # Short sleep to allow OS to reclaim memory
-    time.sleep(0.1)
+    time.sleep(0.3)
 
 
 def _resolve_optional_positive_int(env_name: str) -> int | None:
@@ -97,10 +97,6 @@ def _resolve_optional_positive_int(env_name: str) -> int | None:
 def _resolve_positive_int(env_name: str, default: int) -> int:
     override = _resolve_optional_positive_int(env_name)
     return override if override is not None else default
-
-
-# Reduce batch size to prevent OOM on T4 GPU (15GB VRAM)
-DEFAULT_BATCH_SIZE = 2
 
 
 def _resolve_positive_int_with_min(env_name: str, default: int, *, min_value: int) -> int:
@@ -144,15 +140,6 @@ def _save_results(all_results: list, filename: Path = RESULTS_FILE):
         print(f">>> Đã lưu {len(df)} kết quả vào {filename}")
         return df
     return None
-
-
-def _chunk_records(records, size):
-    for i in range(0, len(records), size):
-        yield records[i : i + size]
-
-
-def _resolve_eval_batch_size() -> int:
-    return _resolve_positive_int("EVAL_BATCH_SIZE", DEFAULT_BATCH_SIZE)
 
 # ==============================================================================
 # HÀM LÀM SẠCH VĂN BẢN (ULTRA-AGGRESSIVE CLEANING)
