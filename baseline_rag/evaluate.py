@@ -1,6 +1,7 @@
 import os
 import gc
 import time
+import re
 import json
 import signal
 import sys
@@ -22,7 +23,7 @@ from ragas.metrics import (
 
 RUN_CONFIG_SETTINGS = {
     # Single worker to prevent OOM on T4 GPU
-    "max_workers": 1,
+    "max_workers": 4,
     # Generous timeout for slow remote LLM calls (30 min per metric)
     "timeout": 1800,
     # Conservative retries to avoid getting stuck
@@ -46,7 +47,7 @@ def _signal_handler(signum, frame):
 
 
 def _clear_gpu_memory():
-    """Clear GPU memory cache aggressively to prevent OOM."""
+    """Clear GPU memory cache aggressively to prevent OOM on T4."""
     # Force Python garbage collection first
     for _ in range(3):
         gc.collect()
@@ -72,6 +73,41 @@ def _clear_gpu_memory():
     time.sleep(0.3)
 
 
+def _resolve_optional_positive_int(env_name: str) -> int | None:
+    raw = (os.getenv(env_name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
+def _resolve_positive_int(env_name: str, default: int) -> int:
+    override = _resolve_optional_positive_int(env_name)
+    return override if override is not None else default
+
+
+def _resolve_positive_int_with_min(env_name: str, default: int, *, min_value: int) -> int:
+    value = _resolve_positive_int(env_name, default)
+    return max(int(min_value), int(value))
+
+
+DEFAULT_MAX_CONTEXT_CHUNKS = 4
+DEFAULT_MAX_CONTEXT_CHARS = 1200
+
+
+def _resolve_max_context_chunks() -> int:
+    return _resolve_positive_int_with_min("EVAL_MAX_CONTEXT_CHUNKS", DEFAULT_MAX_CONTEXT_CHUNKS, min_value=1)
+
+
+def _resolve_max_context_chars() -> int:
+    return _resolve_positive_int_with_min("EVAL_MAX_CONTEXT_CHARS", DEFAULT_MAX_CONTEXT_CHARS, min_value=200)
+
+
 def _save_results(all_results: list, filename: Path = RESULTS_FILE):
     """Save current results to CSV."""
     if all_results:
@@ -82,9 +118,55 @@ def _save_results(all_results: list, filename: Path = RESULTS_FILE):
     return None
 
 
+# ==============================================================================
+# HÀM LÀM SẠCH VĂN BẢN (ULTRA-AGGRESSIVE CLEANING)
+# ==============================================================================
+def clean_response_text(text: str) -> str:
+    """
+    Loại bỏ triệt để hình ảnh markdown và chuỗi base64 rác.
+    """
+    if not isinstance(text, str):
+        return ""
+    
+    # Bước 1: Cắt bỏ thẻ ảnh Markdown chuẩn ![...](...) 
+    # Pattern: Tìm ![...](...) bất kể bên trong là gì
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', text, flags=re.DOTALL)
+
+    # Bước 2: Cắt bỏ nhãn "Hình ảnh:" hoặc "Images:" còn sót lại
+    text = re.sub(r'(?:Hình ảnh:|Images:)\s*', '', text, flags=re.IGNORECASE)
+
+    # Bước 3: (Quan trọng) Tìm và diệt chuỗi "data:image..." nếu nó bị lọt ra ngoài thẻ
+    # Tìm từ "data:image" cho đến hết dấu ngoặc đóng gần nhất hoặc hết dòng
+    text = re.sub(r'data:image\/[a-zA-Z]+;base64,[^\s\)]+', '', text, flags=re.DOTALL)
+
+    # Bước 4: Xóa khoảng trắng thừa và dòng trống liên tiếp
+    text = re.sub(r'\n\s*\n', '\n\n', text).strip()
+    
+    # Bước 5: CHỐT CHẶN AN TOÀN
+    # Nếu text vẫn quá dài (do rác base64 chưa sạch), cắt đi.
+    # 3000 ký tự là quá đủ cho một câu trả lời y tế.
+    MAX_LEN = 3000
+    if len(text) > MAX_LEN:
+        print(f"Text quá dài ({len(text)} chars). Cắt xuống {MAX_LEN} chars...")
+        text = text[:MAX_LEN] + "\n...(truncated for safety)"
+        
+    return text
+
+
 def _resolve_run_config() -> RunConfig:
-    # Adjust RUN_CONFIG_SETTINGS directly in this file for new limits.
-    return RunConfig(**RUN_CONFIG_SETTINGS)
+    # Allow users to override the most common limits via env vars.
+    config = dict(RUN_CONFIG_SETTINGS)
+    overrides = {
+        "max_workers": "RAGAS_MAX_WORKERS",
+        "timeout": "RAGAS_TIMEOUT",
+        "max_retries": "RAGAS_MAX_RETRIES",
+        "max_wait": "RAGAS_MAX_WAIT",
+    }
+    for attr, env_var in overrides.items():
+        value = _resolve_optional_positive_int(env_var)
+        if value is not None:
+            config[attr] = value
+    return RunConfig(**config)
 
 # --- CẤU HÌNH ---
 # Danh sách file Markdown đầu vào (moved to chatbot/data/raw)
@@ -173,12 +255,9 @@ def main():
     print(">>> Đang khởi tạo Baseline Bot...")
     bot = NaiveMedicalRAG(INPUT_FILES, persist_dir=str(BASELINE_STORAGE_DIR))
     
-    questions = []
-    answers = []
-    contexts = []
-    ground_truths = [] 
+    records = []
 
-    print(f">>> Đang chạy {len(test_data)} câu hỏi...")
+    print(f"\n>>> Đang chạy {len(test_data)} câu hỏi...")
     
     for item in test_data:
         if _shutdown_requested:
@@ -188,50 +267,84 @@ def main():
         q = item["question"]
         gt = item["ground_truth"]
         
-        print(f"   Processing: {q}")
+        print(f"\nProcessing: {q}")
+        
+        # 1. Gọi Bot
         response_obj = bot.query(q, return_full=True)
+        raw_ans = str(response_obj)
         
-        questions.append(q)
-        answers.append(str(response_obj))
-        ground_truths.append(gt) # Thêm vào list
+        # 2. Lọc sạch hình ảnh
+        clean_ans = clean_response_text(raw_ans)
         
-        # Lấy context (giới hạn để tránh OOM)
+        # In ra độ dài để kiểm tra
+        print(f" -> Original len: {len(raw_ans)}")
+        print(f" -> Cleaned len : {len(clean_ans)}")
+        if len(clean_ans) > 4000:
+            print("CẢNH BÁO: Text vẫn còn quá dài!")
+        
+        # 3. Lấy Context (giới hạn để prompt chấm điểm không bị quá dài)
+        max_ctx_chunks = _resolve_max_context_chunks()
+        max_ctx_chars = _resolve_max_context_chars()
+        retrieved_ctx = []
+        
         source_nodes = getattr(response_obj, "source_nodes", None) or []
-        retrieved_texts = []
-        MAX_CONTEXT_CHUNKS = 4  # Limit context chunks
-        MAX_CONTEXT_CHARS = 1200  # Limit chars per chunk
-        for node in source_nodes[:MAX_CONTEXT_CHUNKS]:
+        
+        def _node_score(n) -> float:
+            s = getattr(n, "score", None)
+            return float(s) if isinstance(s, (int, float)) else 0.0
+        
+        seen = set()
+        for node in sorted(source_nodes, key=_node_score, reverse=True):
             try:
-                content = node.node.get_content()
+                content = node.node.get_content() if hasattr(node, 'node') else node.get_content()
             except Exception:
-                try:
-                    content = node.get_content()
-                except Exception:
-                    continue
-            # Truncate long contexts
-            if len(content) > MAX_CONTEXT_CHARS:
-                content = content[:MAX_CONTEXT_CHARS] + "..."
-            retrieved_texts.append(content)
-        contexts.append(retrieved_texts)
-
-        # Clear memory after each query to prevent accumulation
+                continue
+            content = str(content or "").strip()
+            if not content:
+                continue
+            key = hash(content)
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(content) > max_ctx_chars:
+                content = content[:max_ctx_chars] + "..."
+            retrieved_ctx.append(content)
+            if len(retrieved_ctx) >= max_ctx_chunks:
+                break
+        
+        print(f" -> Retrieved: {len(retrieved_ctx)} chunks context.")
+        
+        records.append(
+            {
+                "question": q,
+                "answer": clean_ans,
+                "contexts": retrieved_ctx,
+                "ground_truth": gt,
+            }
+        )
+        
+        # Clear GPU memory after each query to prevent accumulation
         _clear_gpu_memory()
+        
+        # Avoid hammering the remote endpoint while keeping throughput reasonable.
         time.sleep(0.3)
-
-    # Build records for batch processing
-    records = []
-    for i in range(len(questions)):
-        records.append({
-            "question": questions[i],
-            "answer": answers[i],
-            "contexts": contexts[i],
-            "ground_truth": ground_truths[i],
-        })
 
     print(f"\n>>> Thu thập xong {len(records)} câu trả lời hợp lệ.")
 
     if not records:
         raise ValueError("Không tìm thấy câu trả lời hợp lệ để chấm điểm.")
+
+    # Debug: print versions to make timeout tuning reproducible.
+    try:
+        import ragas as _ragas  # type: ignore
+        print(f">>> ragas version: {getattr(_ragas, '__version__', 'unknown')}")
+    except Exception:
+        pass
+    try:
+        import langchain as _lc  # type: ignore
+        print(f">>> langchain version: {getattr(_lc, '__version__', 'unknown')}")
+    except Exception:
+        pass
 
     # =========================================================================
     # SEQUENTIAL EVALUATION with EARLY STOP SAVE
@@ -312,19 +425,17 @@ def main():
             break
         
         # Delay between questions for stability
-        time.sleep(0.3)
+        time.sleep(1.0)
 
     if not all_results:
         print(">>> Không có kết quả nào để lưu.")
         return
 
-    print("\n>>> KẾT QUẢ ĐÁNH GIÁ TỔNG HỢP:")
     final_df = pd.concat(all_results, ignore_index=True)
-    print(final_df)
     
     # Save final results
-    final_df.to_csv(RESULTS_FILE, index=False, encoding='utf-8-sig')
-    print(f">>> Đã lưu báo cáo vào {RESULTS_FILE}")
+    final_df.to_csv(RESULTS_FILE, index=False, encoding="utf-8-sig")
+    print(f">>> Đã lưu kết quả vào: {RESULTS_FILE}")
     
     print(f"\n>>> ✅ Hoàn thành! Đã xử lý {len(final_df)} câu hỏi.")
 

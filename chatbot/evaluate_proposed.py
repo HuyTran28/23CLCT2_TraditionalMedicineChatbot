@@ -31,7 +31,7 @@ from ragas.metrics import (
 
 RUN_CONFIG_SETTINGS = {
     # Single worker to prevent OOM on T4 GPU
-    "max_workers": 1,
+    "max_workers": 4,
     # Generous timeout for slow remote LLM calls (30 min per metric)
     "timeout": 1800,
     # Conservative retries to avoid getting stuck
