@@ -1,0 +1,597 @@
+import json
+import logging
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, Optional, Tuple, Type, TYPE_CHECKING
+
+from pydantic import BaseModel
+
+from modules.extractor import MedicalDataExtractor, RateLimitPauseRequired
+from modules.book_splitters import split_by_book
+
+if TYPE_CHECKING:
+    # Avoid importing embedding backends at module import time.
+    from modules.vector_store import MedicalVectorStore
+
+logger = logging.getLogger(__name__)
+
+
+_NESTED_IMAGE_RE = re.compile(
+    r"!\[\]\(\!\[id:\s*(?P<id>[^\]]+?)\]\((?P<file>[^)]+?)\)\)"
+)
+_GENERIC_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+_BREAK_TAG_RE = re.compile(r"</?break\s*/?>", re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r"<!--[^>]*?-->")
+_PAGE_MARKER_RE = re.compile(r"^\s*#{1,6}\s*page\s*\d+\s*$", re.IGNORECASE)
+_HEADING_NUMBER_RE = re.compile(
+    r"^(?P<prefix>\s*#{1,6}\s*)(?P<num>\(?\s*\d+\s*\)?)(?:\s*[\.)])?\s+",
+    re.UNICODE,
+)
+
+_PLAIN_NUMBER_RE = re.compile(r"^\s*\d+\s*[\.)]\s+", re.UNICODE)
+
+
+def _sanitize_chunk_text_for_llm(text: str) -> str:
+    """Reduce token waste in chunks sent to the LLM.
+
+    Keeps semantic content while removing/compacting common OCR artifacts:
+      - HTML-ish break tags: </break>, <break/>
+      - leading numbering: '6. ...' (including after markdown heading hashes)
+      - bulky markdown image syntax, replacing with short placeholders
+    """
+    if not text:
+        return ""
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    out_lines: list[str] = []
+    for ln in lines:
+        if not ln:
+            out_lines.append(ln)
+            continue
+
+        # Drop PDF extraction HTML comments like: <!-- page=1 bbox=(...) -->
+        ln = _HTML_COMMENT_RE.sub(" ", ln)
+
+        # Drop standalone page markers: '## Page 11'
+        if _PAGE_MARKER_RE.match(ln):
+            out_lines.append("")
+            continue
+
+        # Drop standalone break tags anywhere in the line.
+        ln = _BREAK_TAG_RE.sub(" ", ln)
+
+        # Remove leading numbering like: '## 6 ...', '#### (7) ...', '#### 1) ...'
+        # and, as a fallback, plain list numbering like: '6. ...'
+        if ln.lstrip().startswith("#"):
+            ln = _HEADING_NUMBER_RE.sub(lambda m: (m.group("prefix") or ""), ln)
+        else:
+            ln = _PLAIN_NUMBER_RE.sub("", ln)
+
+        # Compact the dataset's nested image syntax into a tiny placeholder.
+        # Example: ![](![id: foo_img_007](foo_img_007.png)) -> [[IMAGE:foo_img_007]]
+        def _nested_repl(m: re.Match) -> str:
+            image_id = (m.group("id") or "").strip()
+            if image_id:
+                return f"[[IMAGE:{image_id}]]"
+            return "[[IMAGE]]"
+
+        ln = _NESTED_IMAGE_RE.sub(_nested_repl, ln)
+
+        # Generic markdown image syntax -> [[IMAGE]] (keep it short)
+        ln = _GENERIC_IMAGE_RE.sub("[[IMAGE]]", ln)
+
+        # Normalize whitespace introduced by replacements.
+        ln = re.sub(r"\s{2,}", " ", ln).rstrip()
+        out_lines.append(ln)
+
+    # Collapse excessive blank lines (keep at most one blank line).
+    cleaned: list[str] = []
+    prev_blank = False
+    for ln in out_lines:
+        blank = not ln.strip()
+        if blank and prev_blank:
+            continue
+        cleaned.append(ln)
+        prev_blank = blank
+
+    return "\n".join(cleaned).strip()
+
+
+@dataclass(frozen=True)
+class ChunkRecord:
+    source_path: str
+    chunk_index: int
+    chunk_text: str
+    schema_name: str
+
+
+def iter_markdown_files(input_path: str) -> Iterator[Path]:
+    p = Path(input_path)
+    if p.is_file():
+        yield p
+        return
+    for fp in sorted(p.rglob("*.md")):
+        if fp.is_file():
+            yield fp
+
+
+def iter_chunks_from_file(
+    filepath: Path,
+    schema: Type[BaseModel],
+    chunk_by: str = "book",
+) -> Iterator[ChunkRecord]:
+    content = filepath.read_text(encoding="utf-8")
+
+    if chunk_by == "book":
+        split_kind = None
+        schema_name = getattr(schema, "__name__", "")
+        if schema_name == "RemedyRecipe":
+            split_kind = "recipes"
+        elif schema_name == "MedicinalPlant":
+            split_kind = "plants"
+        elif schema_name == "EndocrinePatternRecord":
+            split_kind = "patterns"
+        elif schema_name in {"EndocrineSyndrome", "EndocrineDisease"}:
+            split_kind = "syndromes"
+        chunks = split_by_book(str(filepath), content, split_kind=split_kind)
+    elif chunk_by == "section":
+        chunks = [c.strip() for c in content.split("\n#") if c.strip()]
+    else:
+        chunks = [c.strip() for c in content.split("\n\n") if c.strip()]
+
+    schema_name = getattr(schema, "__name__", "BaseModel")
+    for i, ch in enumerate(chunks):
+        yield ChunkRecord(
+            source_path=str(filepath),
+            chunk_index=i,
+            chunk_text=ch,
+            schema_name=schema_name,
+        )
+
+
+# Robust default for image storage relative to the repository root
+_DEFAULT_IMAGE_STORE = str(Path(__file__).resolve().parents[3] / "data" / "processed" / "images")
+
+def extract_chunks_to_jsonl(
+    *,
+    extractor: MedicalDataExtractor,
+    chunks: Iterable[ChunkRecord],
+    schema: Type[BaseModel],
+    out_jsonl_path: str,
+    requests_per_minute: Optional[float] = 30.0,
+    enrich_images: bool = False,
+    image_store_dir: str = _DEFAULT_IMAGE_STORE,
+    image_prefer_format: str = "webp",
+    image_quality: int = 80,
+    resume: bool = False,
+) -> int:
+    """Extract chunk -> schema JSONL without holding everything in RAM.
+
+    Writes one JSON object per line with keys:
+      - data: schema dump
+            - meta: source_path, id
+    """
+    out_path = Path(out_jsonl_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # If not resuming, start fresh.
+    if not resume and out_path.exists():
+        try:
+            out_path.unlink()
+        except Exception:
+            # If unlink fails on Windows (e.g., file open in editor), we'll truncate via open('w').
+            pass
+
+    # Resume support: if JSONL already exists, skip chunks that already have data.
+    existing_ids: set[str] = set()
+    if resume and out_path.exists():
+        try:
+            with out_path.open("r", encoding="utf-8") as rf:
+                for line in rf:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if "data" not in rec:
+                        continue
+                    meta = rec.get("meta") or {}
+                    rid = meta.get("id")
+                    if not rid:
+                        sp = meta.get("source_path", "")
+                        ci = meta.get("chunk_index", "")
+                        if sp != "" and ci != "":
+                            rid = f"{sp}:#{ci}"
+                    if rid:
+                        existing_ids.add(str(rid))
+        except Exception:
+            existing_ids = set()
+
+    n_ok = 0
+    open_mode = "a" if resume else "w"
+    with out_path.open(open_mode, encoding="utf-8") as f:
+        for ch in chunks:
+            rid = f"{ch.source_path}:#{ch.chunk_index}"
+            if rid in existing_ids:
+                continue
+            try:
+                llm_text = _sanitize_chunk_text_for_llm(ch.chunk_text)
+                obj = extractor.extract_single(
+                    llm_text,
+                    schema,
+                    context_hint=f"source={Path(ch.source_path).name} chunk={ch.chunk_index}",
+                )
+
+                # Throttle between requests (best-effort). Groq client may also retry on 429.
+                if requests_per_minute and requests_per_minute > 0:
+                    import time
+
+                    time.sleep(60.0 / float(requests_per_minute))
+
+                if enrich_images:
+                    from modules.enrich_images import enrich_record_with_images
+
+                    obj = enrich_record_with_images(
+                        record=obj,
+                        chunk_text=ch.chunk_text,
+                        source_markdown_path=ch.source_path,
+                        store_dir=image_store_dir,
+                        prefer_format=image_prefer_format,
+                        quality=image_quality,
+                    )
+
+                rec = {
+                    "data": obj.model_dump(),
+                    "meta": {
+                        "source_path": ch.source_path,
+                        "id": f"{ch.source_path}:#{ch.chunk_index}",
+                    },
+                }
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                n_ok += 1
+                existing_ids.add(rid)
+            except Exception as e:
+                # If Groq asks for a long wait (e.g., tokens/day exhausted), stop early.
+                if isinstance(e, RateLimitPauseRequired):
+                    raise
+
+                rec = {
+                    "error": str(e),
+                    "meta": {
+                        "source_path": ch.source_path,
+                        "id": f"{ch.source_path}:#{ch.chunk_index}",
+                    },
+                }
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                logger.error(f"Extraction failed for {ch.source_path}#{ch.chunk_index}: {e}")
+
+    return n_ok
+
+
+def iter_objects_from_jsonl(
+    jsonl_path: str,
+    schema: Type[BaseModel],
+) -> Iterator[BaseModel]:
+    def _loads_first_json_obj(line: str) -> Optional[Dict[str, Any]]:
+        s = (line or "").strip()
+        if not s:
+            return None
+        # Handle accidental concatenation ("}{") or leading junk.
+        start = s.find("{")
+        if start < 0:
+            return None
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(s[start:])
+        except Exception:
+            return None
+        return obj if isinstance(obj, dict) else None
+
+    p = Path(jsonl_path)
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = _loads_first_json_obj(line)
+            if not rec:
+                continue
+            if "data" not in rec:
+                continue
+            yield schema(**rec["data"])
+
+
+def iter_text_records_from_jsonl(
+    jsonl_path: str,
+    *,
+    index_type: str,
+) -> Iterator[Tuple[str, Dict[str, Any], str]]:
+    """Yield (text, metadata, id) for vector ingestion."""
+    def _loads_first_json_obj(line: str) -> Optional[Dict[str, Any]]:
+        s = (line or "").strip()
+        if not s:
+            return None
+        start = s.find("{")
+        if start < 0:
+            return None
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(s[start:])
+        except Exception:
+            return None
+        return obj if isinstance(obj, dict) else None
+
+    p = Path(jsonl_path)
+    with p.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = _loads_first_json_obj(line)
+            if not rec:
+                continue
+            if "data" not in rec or "meta" not in rec:
+                continue
+
+            data = rec["data"]
+            meta = rec["meta"]
+            # Keep everything useful for citations
+            merged_meta = {**meta, **data, "index_type": index_type}
+
+            text = _format_text_from_data(data, index_type=index_type)
+            rid = meta.get("id") or f"{meta.get('source_path','')}:#{meta.get('chunk_index','')}"
+            yield text, merged_meta, rid
+
+
+def _format_text_from_data(data: Dict[str, Any], *, index_type: str) -> str:
+    if index_type == "herbs":
+        # Supports MedicinalPlant, MedicinalVegetable, and endocrine plants.
+        plant = data.get("plant_name") or data.get("name") or ""
+        other = data.get("other_names") or []
+        sci = data.get("scientific_name") or ""
+        family = data.get("family") or ""
+        chem = data.get("chemical_composition") or ""
+        feats = data.get("botanical_features") or data.get("botanical_description") or ""
+        dist = data.get("distribution_and_ecology") or ""
+        props = data.get("properties_and_dosage") or data.get("properties") or data.get("medicinal_properties") or ""
+        pharm = data.get("pharmacological_effects") or []
+        parts_used = data.get("parts_used") or []
+        treats = data.get("treats") or []
+        warns = data.get("contraindications_warnings") or ""
+        apps = data.get("therapeutic_applications") or []
+        
+        # Vegetable specific
+        culinary = data.get("culinary_uses") or ""
+        veg_remedies = data.get("remedies") or []
+
+        out: list[str] = []
+        if plant:
+            out.append(f"Tên cây: {plant}")
+        if other:
+            out.append(f"Tên gọi khác: {', '.join(other) if isinstance(other, list) else other}")
+        if sci:
+            out.append(f"Tên khoa học: {sci}")
+        if family:
+            out.append(f"Họ: {family}")
+        if chem:
+            out.append(f"Thành phần hóa học: {chem}")
+        if feats:
+            out.append(f"Đặc điểm thực vật: {feats}")
+        if dist:
+            out.append(f"Phân bố/Sinh thái: {dist}")
+        if culinary:
+            out.append(f"Công dụng ẩm thực: {culinary}")
+        if props:
+            out.append(f"Tính vị/Công năng/Liều dùng: {props}")
+        if pharm:
+            out.append(
+                "Tác dụng dược lý: "
+                + (", ".join(pharm) if isinstance(pharm, list) else str(pharm))
+            )
+
+        # parts_used can be a list of dicts (PartUsage)
+        if isinstance(parts_used, list) and parts_used:
+            lines: list[str] = []
+            for p in parts_used:
+                if not isinstance(p, dict):
+                    continue
+                part = (p.get("part") or "").strip()
+                usage = (p.get("usage_description") or "").strip()
+                if part and usage:
+                    lines.append(f"- {part}: {usage}")
+                elif part:
+                    lines.append(f"- {part}")
+            if lines:
+                out.append("Bộ phận dùng:\n" + "\n".join(lines))
+
+        if treats:
+            out.append(
+                "Chỉ định/Trị: "
+                + (", ".join(treats) if isinstance(treats, list) else str(treats))
+            )
+        
+        if veg_remedies:
+            out.append(
+                "Bài thuốc: "
+                + (", ".join(veg_remedies) if isinstance(veg_remedies, list) else str(veg_remedies))
+            )
+
+        # therapeutic_applications (RemedyApplication)
+        if isinstance(apps, list) and apps:
+            app_lines: list[str] = []
+            for a in apps:
+                if not isinstance(a, dict):
+                    continue
+                indication = (a.get("indication") or "").strip()
+                ingredients = (a.get("ingredients") or "").strip()
+                usage = (a.get("usage_instructions") or "").strip()
+                if not (indication or ingredients or usage):
+                    continue
+                bits: list[str] = []
+                if indication:
+                    bits.append(f"Chỉ định: {indication}")
+                if ingredients:
+                    bits.append(f"Thành phần: {ingredients}")
+                if usage:
+                    bits.append(f"Cách dùng: {usage}")
+                app_lines.append("- " + " | ".join(bits))
+            if app_lines:
+                out.append("Ứng dụng cụ thể:\n" + "\n".join(app_lines))
+
+        if warns:
+            out.append(f"Chống chỉ định/Lưu ý: {warns}")
+
+        return "\n".join(out).strip()
+
+    if index_type == "remedies":
+        rname = data.get("recipe_name") or ""
+        source = data.get("source_plant") or ""
+        ingredients = data.get("ingredients") or []
+        steps = data.get("preparation_steps") or []
+        usage = data.get("usage_instructions") or ""
+        benefits = data.get("health_benefits") or []
+        return (
+            f"Recipe: {rname}\n"
+            f"Source plant: {source}\n"
+            f"Ingredients: {', '.join(ingredients) if isinstance(ingredients, list) else ingredients}\n"
+            f"Preparation: {', '.join(steps) if isinstance(steps, list) else steps}\n"
+            f"Usage: {usage}\n"
+            f"Benefits: {', '.join(benefits) if isinstance(benefits, list) else benefits}\n"
+        ).strip()
+
+    if index_type == "diseases":
+        # Supports both legacy EndocrineSyndrome and newer EndocrineDisease.
+        name = (
+            data.get("disease_name")
+            or data.get("syndrome_name")
+            or data.get("disease")
+            or ""
+        )
+
+        # Pattern-level record support (EndocrinePatternRecord)
+        pattern_name = data.get("pattern_name") or ""
+        if pattern_name:
+            symptoms = data.get("symptoms") or ""
+            principle = data.get("treatment_principle") or ""
+            formulas = data.get("formulas") or []
+            fnames: list[str] = []
+            if isinstance(formulas, list):
+                for f in formulas:
+                    if isinstance(f, dict):
+                        nm = f.get("formula_name") or f.get("name") or ""
+                        if nm:
+                            fnames.append(str(nm))
+                    elif isinstance(f, str) and f.strip():
+                        fnames.append(f.strip())
+            return (
+                f"Endocrine disease: {name}\n"
+                f"Pattern: {pattern_name}\n"
+                + (f"Symptoms: {symptoms}\n" if symptoms else "")
+                + (f"Treatment principle: {principle}\n" if principle else "")
+                + (f"Formulas: {', '.join(fnames)}\n" if fnames else "")
+            ).strip()
+
+        overview = data.get("overview") or ""
+        clinical = data.get("clinical_signs") or data.get("symptoms") or ""
+        diagnosis = data.get("diagnosis") or ""
+        tcm = data.get("tcm_view") or ""
+
+        classification = data.get("classification") or []
+        if isinstance(classification, str):
+            classification_s = classification
+        elif isinstance(classification, list):
+            classification_s = ", ".join(str(x) for x in classification if str(x).strip())
+        else:
+            classification_s = ""
+
+        # Patterns -> short bullet-like lines
+        patterns = data.get("patterns") or []
+        pattern_lines: list[str] = []
+        if isinstance(patterns, list):
+            for p in patterns:
+                if not isinstance(p, dict):
+                    continue
+                pn = p.get("pattern_name") or p.get("syndrome_name") or ""
+                pp = p.get("treatment_principle") or ""
+                ps = p.get("symptoms") or ""
+                formulas = p.get("formulas") or []
+                fnames: list[str] = []
+                if isinstance(formulas, list):
+                    for f in formulas:
+                        if isinstance(f, dict):
+                            nm = f.get("formula_name") or f.get("name") or ""
+                            if nm:
+                                fnames.append(str(nm))
+                        elif isinstance(f, str) and f.strip():
+                            fnames.append(f.strip())
+
+                bits = []
+                if pn:
+                    bits.append(f"Pattern: {pn}")
+                if pp:
+                    bits.append(f"Principle: {pp}")
+                if ps:
+                    bits.append(f"Symptoms: {ps}")
+                if fnames:
+                    bits.append(f"Formulas: {', '.join(fnames)}")
+                if bits:
+                    pattern_lines.append(" - " + " | ".join(bits))
+
+        exp = data.get("experience_formulas") or []
+        exp_names: list[str] = []
+        if isinstance(exp, list):
+            for f in exp:
+                if isinstance(f, dict):
+                    nm = f.get("formula_name") or f.get("name") or ""
+                    if nm:
+                        exp_names.append(str(nm))
+                elif isinstance(f, str) and f.strip():
+                    exp_names.append(f.strip())
+
+        prescribed = data.get("prescribed_remedy") or ""
+        principle = data.get("treatment_principle") or ""
+
+        return (
+            f"Endocrine topic: {name}\n"
+            + (f"Overview: {overview}\n" if overview else "")
+            + (f"Classification: {classification_s}\n" if classification_s else "")
+            + (f"Clinical signs: {clinical}\n" if clinical else "")
+            + (f"Diagnosis: {diagnosis}\n" if diagnosis else "")
+            + (f"TCM view: {tcm}\n" if tcm else "")
+            + (f"Treatment principle: {principle}\n" if principle else "")
+            + (f"Prescribed remedy: {prescribed}\n" if prescribed else "")
+            + ("Patterns:\n" + "\n".join(pattern_lines) + "\n" if pattern_lines else "")
+            + (f"Experience formulas: {', '.join(exp_names)}\n" if exp_names else "")
+        ).strip()
+
+    if index_type == "emergency":
+        cond = data.get("condition_name") or ""
+        signs = data.get("clinical_signs") or []
+        steps = data.get("first_aid_steps") or []
+        antidote = data.get("specific_antidote") or ""
+        return (
+            f"Condition: {cond}\n"
+            f"Signs: {', '.join(signs) if isinstance(signs, list) else signs}\n"
+            f"First aid: {', '.join(steps) if isinstance(steps, list) else steps}\n"
+            f"Antidote: {antidote}\n"
+        ).strip()
+
+    return json.dumps(data, ensure_ascii=False)
+
+
+def ingest_jsonl_to_vector_store(
+    *,
+    vector_store: "MedicalVectorStore",
+    jsonl_path: str,
+    schema: Type[BaseModel],
+    index_type: str,
+    batch_size: int = 16,
+) -> int:
+    # schema is unused for ingestion now; kept for backward compatibility with callers
+    return vector_store.add_texts_stream(
+        index_type=index_type,
+        records=iter_text_records_from_jsonl(jsonl_path, index_type=index_type),
+        batch_size=batch_size,
+    )

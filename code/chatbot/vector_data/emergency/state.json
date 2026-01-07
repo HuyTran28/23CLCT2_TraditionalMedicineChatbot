@@ -1,0 +1,6 @@
+{
+  "dim": 1024,
+  "shard": 0,
+  "offset": 110,
+  "embedding_model": "BAAI/bge-m3"
+}

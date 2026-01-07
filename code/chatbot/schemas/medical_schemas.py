@@ -1,0 +1,761 @@
+import json
+
+from pydantic import BaseModel, Field, model_validator
+from pydantic.config import ConfigDict
+from typing import List, Optional, Any
+from enum import Enum
+
+class ImageAsset(BaseModel):
+    """Represents an image attached to a chunk (for rendering).
+
+    Notes:
+        - Images are stored efficiently on disk; JSONL stores only metadata + paths.
+        - No VLM/captioning is used; plant features come from `botanical_features`.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    stored_path: Optional[str] = Field(
+        default=None,
+        description="Path of the optimized stored image (typically webp)",
+    )
+    sha256: Optional[str] = Field(
+        default=None,
+        description="SHA-256 hash of the image bytes (stable id for dedupe/caching)",
+    )
+
+    db_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional ID for retrieving image bytes from the SQLite 'images' table "
+            "(when using disk backend). Typically the same as sha256."
+        ),
+    )
+    mime_type: Optional[str] = Field(default=None, description="MIME type (e.g., image/png)")
+    width: Optional[int] = Field(default=None, description="Image width in pixels")
+    height: Optional[int] = Field(default=None, description="Image height in pixels")
+    byte_size: Optional[int] = Field(default=None, description="Source image size in bytes")
+
+# ============================================================================
+# SCHEMA 1: Medicinal Plants & Herbs (Cây cảnh - Cây thuốc)
+# ============================================================================
+class PartUsage(BaseModel):
+    part: str = Field(..., description="Bộ phận dùng")
+    usage_description: Optional[str] = Field(
+        default=None,
+        description="Cách sử dụng hoặc ghi chú về dịch liệu"
+    )
+
+
+class RemedyApplication(BaseModel):
+    """Specific medical application of a plant.
+
+    Used by endocrine-style plant monographs.
+    """
+
+    indication: str = Field(..., description="Bệnh hoặc triệu chứng được chữa")
+    ingredients: Optional[str] = Field(None, description="Thành phần bài thuốc")
+    usage_instructions: Optional[str] = Field(
+        default=None,
+        description="Cách dùng và liều dùng",
+    )
+
+class MedicinalPlant(BaseModel):
+    """
+    Core schema for extracting medicinal plant entities.
+    
+    Fields:
+        plant_name: Primary name (e.g., "Cây Bách xù")
+        other_names: Alternative names
+        botanical_features: Physical description
+        distribution_and_ecology: Growth habitat and conditions
+        parts_used: Plant parts used medicinally
+        properties: Taste (vị) and nature (tính)
+        pharmacological_effects: General medical actions
+        treats: Specific diseases/conditions treated
+    """
+    
+    plant_name: str = Field(
+        ...,
+        description="Tên chính của cây"
+    )
+    other_names: List[str] = Field(
+        default_factory=list,
+        description="Tên gọi khác (có thể nhiều tên).",
+    )
+
+    scientific_name: Optional[str] = Field(
+        default=None,
+        description="Tên khoa học (nếu có)",
+    )
+
+    family: Optional[str] = Field(
+        default=None,
+        description="Họ thực vật (ví dụ: Họ Bách, Họ Cúc, ...)"
+    )
+    
+    botanical_features: Optional[str] = Field(
+        default=None,
+        description="Mô tả chi tiết: thân, lá, hoa, quả (nếu có)",
+    )
+    distribution_and_ecology: Optional[str] = Field(
+        default=None,
+        description="Nơi mọc, mùa hoa quả (nếu có)"
+    )
+    parts_used: List[PartUsage] = Field(
+        default_factory=list,
+        description="Danh sách bộ phận dùng kèm cách dùng cụ thể"
+    )
+    properties: Optional[str] = Field(
+        default=None,
+        description="Tính vị (e.g., 'Vị cay thơm, tính ấm') (nếu có)",
+    )
+    properties_and_dosage: Optional[str] = Field(
+        default=None,
+        description="Tính vị, công năng, liều dùng (một số sách gộp chung) (nếu có)",
+    )
+    pharmacological_effects: List[str] = Field(
+        default_factory=list,
+        description="Tác dụng dược lý (e.g., ['thanh nhiệt', 'giải độc'])"
+    )
+    treats: List[str] = Field(
+        default_factory=list,
+        description="Danh sách bệnh/triệu chứng cụ thể (nếu có)",
+    )
+
+    contraindications_warnings: Optional[str] = Field(
+        default=None,
+        description="Chống chỉ định/cảnh báo/liều lượng hoặc lưu ý an toàn (nếu có)",
+    )
+
+    images: List[ImageAsset] = Field(
+        default_factory=list,
+        description="Danh sách ảnh liên quan (đường dẫn + metadata). Thường 1 ảnh/cây.",
+    )
+
+    therapeutic_applications: List[RemedyApplication] = Field(
+        default_factory=list,
+        description="Ứng dụng/chỉ định cụ thể (nếu có)",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_plant_fields(cls, data: Any):
+        # Accept either dict-like input or already-built objects.
+        if not isinstance(data, dict):
+            return data
+
+        d = dict(data)
+
+        def _coerce_list_field(key: str):
+            v = d.get(key)
+            if v is None:
+                d[key] = []
+                return
+            if isinstance(v, list):
+                return
+            # Sometimes the LLM returns a single object or a single string.
+            if isinstance(v, dict):
+                d[key] = [v]
+                return
+            if isinstance(v, str):
+                s = v.strip()
+                d[key] = [s] if s else []
+                return
+
+        # other_names may come as a string from older schema/prompt.
+        on = d.get("other_names")
+        if isinstance(on, str):
+            s = on.strip()
+            d["other_names"] = [s] if s else []
+        elif on is None:
+            d["other_names"] = []
+
+        # LLMs sometimes emit null for list fields; normalize to [].
+        _coerce_list_field("pharmacological_effects")
+        _coerce_list_field("treats")
+        _coerce_list_field("parts_used")
+        _coerce_list_field("images")
+        _coerce_list_field("therapeutic_applications")
+
+        # LLMs sometimes emit null for nested required-ish strings.
+        ta = d.get("therapeutic_applications")
+        if isinstance(ta, list):
+            cleaned_ta = []
+            for item in ta:
+                if not isinstance(item, dict):
+                    # RemedyApplication requires an object with an indication; drop junk.
+                    continue
+
+                item2 = dict(item)
+
+                # Coerce indication to a non-empty string; otherwise drop this entry.
+                raw_indication = item2.get("indication")
+                if raw_indication is None:
+                    continue
+                if isinstance(raw_indication, list):
+                    raw_indication = ", ".join(str(x).strip() for x in raw_indication if str(x).strip())
+                indication = str(raw_indication).strip()
+                if not indication:
+                    continue
+                item2["indication"] = indication
+
+                # Normalize optional-ish strings.
+                if item2.get("usage_instructions") is None:
+                    item2["usage_instructions"] = ""
+                if isinstance(item2.get("ingredients"), list):
+                    item2["ingredients"] = ", ".join(
+                        str(x).strip() for x in item2["ingredients"] if str(x).strip()
+                    )
+
+                cleaned_ta.append(item2)
+            d["therapeutic_applications"] = cleaned_ta
+
+        # Some sources use `botanical_description` for the same content.
+        # Keep only one canonical field in the schema to avoid duplication.
+        bf = d.get("botanical_features")
+        bd = d.get("botanical_description")
+        if (not bf) and isinstance(bd, str) and bd.strip():
+            d["botanical_features"] = bd
+        # Drop the alias key so it doesn't leak into model_dump via other paths.
+        if "botanical_description" in d:
+            d.pop("botanical_description", None)
+
+        p = d.get("properties")
+        pd = d.get("properties_and_dosage")
+        if (not p) and isinstance(pd, str) and pd.strip():
+            d["properties"] = pd
+        if (not pd) and isinstance(p, str) and p.strip():
+            d["properties_and_dosage"] = p
+
+        return d
+
+    model_config = ConfigDict(
+        extra="ignore",
+        json_schema_extra={
+            "example": {
+                "plant_name": "Cây Bách xù",
+                "other_names": ["Cốt tía"],
+                "family": "Họ Bách",
+                "parts_used": [
+                    {"part": "Cành", "usage_description": "Cất tinh dầu"},
+                    {"part": "Lá", "usage_description": "Dùng tươi"},
+                    {"part": "Hạt", "usage_description": "Ép lấy dầu"},
+                ],
+                "botanical_features": "Cây gỗ cao 2-3m...",
+                "properties": "Vị cay, tính ấm",
+                "pharmacological_effects": ["thanh nhiệt"],
+                "treats": ["ho gà", "mụn nhọt"],
+                "images": [
+                    {
+                        "stored_path": "../data/processed/images/cay-canh--cay-thuoc-trong-nha-truong_img_002.webp",
+                        "sha256": "<sha256>",
+                    }
+                ],
+            }
+        },
+    )
+
+
+
+
+# ============================================================================
+# SCHEMA 2: Remedies & Recipes (Bài thuốc, nước uống)
+# ============================================================================
+
+class RemedyRecipe(BaseModel):
+    """Schema for beverage recipes and home remedies."""
+    
+    recipe_name: str = Field(
+        ...,
+        description="Tên bài thuốc (e.g., 'Nước Chanh muối')"
+    )
+    source_plant: str = Field(
+        ...,
+        description="Cây chính tạo bài thuốc này"
+    )
+    ingredients: List[str] = Field(
+        ...,
+        description="Danh sách nguyên liệu với định lượng"
+    )
+    preparation_steps: List[str] = Field(
+        ...,
+        description="Các bước thực hiện, sơ chế"
+    )
+    usage_instructions: str = Field(
+        ...,
+        description="Cách dùng, pha chế"
+    )
+    health_benefits: List[str] = Field(
+        default_factory=list,
+        description="Công dụng cụ thể"
+    )
+    indications: Optional[str] = Field(
+        default=None,
+        description="Chỉ định/đối tượng phù hợp hoặc mục đích dùng (nếu có)",
+    )
+    dosage: Optional[str] = Field(
+        default=None,
+        description="Liều dùng/tần suất (nếu có)",
+    )
+    contraindications_warnings: Optional[str] = Field(
+        default=None,
+        description="Chống chỉ định/cảnh báo (nếu có)",
+    )
+
+    images: List[ImageAsset] = Field(
+        default_factory=list,
+        description="Ảnh liên quan trong chunk (nếu có)",
+    )
+
+
+class DocumentContent(BaseModel):
+    """Wrapper for document extraction."""
+    plants: List[MedicinalPlant] = Field(
+        default_factory=list,
+        description="Danh sách các cây thuốc"
+    )
+    recipes: List[RemedyRecipe] = Field(
+        default_factory=list,
+        description="Danh sách các bài thuốc/nước uống"
+    )
+
+
+# ============================================================================
+# SCHEMA 3: Medicinal Vegetables (Cây rau làm thuốc)
+# ============================================================================
+
+class MedicinalVegetable(BaseModel):
+    """Schema for medicinal vegetables with culinary uses."""
+    
+    plant_name: str = Field(..., description="Tên chính của cây rau")
+    other_names: List[str] = Field(default_factory=list, description="Tên gọi khác")
+    scientific_name: Optional[str] = Field(None, description="Tên khoa học")
+    family: Optional[str] = Field(None, description="Họ thực vật")
+    botanical_description: str = Field(..., description="Mô tả đặc điểm")
+    culinary_uses: str = Field(..., description="Cách dùng làm thực phẩm")
+    medicinal_properties: str = Field(..., description="Tính vị và tác dụng dược lý")
+    distribution_and_ecology: Optional[str] = Field(None, description="Nguồn gốc/phân bố/sinh thái")
+    chemical_composition: Optional[str] = Field(None, description="Thành phần hoá học (nếu có)")
+    parts_used: Optional[str] = Field(None, description="Bộ phận dùng (nếu có)")
+    dosage: Optional[str] = Field(None, description="Liều dùng/cách dùng (nếu có)")
+    contraindications_warnings: Optional[str] = Field(None, description="Chống chỉ định/cảnh báo (nếu có)")
+    remedies: List[str] = Field(
+        default_factory=list,
+        description="Danh sách bài thuốc hoặc hướng dẫn chữa bệnh"
+    )
+
+
+    images: List[ImageAsset] = Field(
+        default_factory=list,
+        description="Ảnh liên quan trong chunk (nếu có)",
+    )
+
+
+class VegetableDocumentContent(BaseModel):
+    """Root wrapper for vegetable documents."""
+    vegetables: List[MedicinalVegetable] = Field(
+        ...,
+        description="Danh sách rau làm thuốc"
+    )
+
+
+# ============================================================================
+# SCHEMA 4: Endocrine Disorders (Cây thuốc, vị thuốc phòng và chữa bệnh nội tiết)
+# ============================================================================
+
+class EndocrineSyndrome(BaseModel):
+    """Schema for clinical syndromes (Thể bệnh) in TCM."""
+    
+    syndrome_name: str = Field(..., description="Tên thể bệnh")
+    symptoms: str = Field(..., description="Triệu chứng lâm sàng")
+    treatment_principle: str = Field(..., description="Pháp điều trị")
+    prescribed_remedy: str = Field(..., description="Tên bài thuốc hoặc hướng dẫn")
+
+    images: List[ImageAsset] = Field(
+        default_factory=list,
+        description="Ảnh liên quan trong chunk (nếu có)",
+    )
+class EndocrineDocumentContent(BaseModel):
+    """Root wrapper for endocrine medicine documents."""
+    # NOTE: This endocrine source is chunked by *disease chapter* (PHẦN THỨ HAI)
+    # and by *plant monographs* (PHẦN THỨ BA). The legacy `EndocrineSyndrome`
+    # schema (4 strings) is often too narrow for disease chapters that contain
+    # multiple patterns + many formulas/tables.
+
+
+class EndocrineFormulaIngredient(BaseModel):
+    """One ingredient row, usually from a markdown table."""
+
+    name: str = Field(..., description="Tên vị thuốc/nguyên liệu")
+    amount: Optional[str] = Field(default=None, description="Định lượng (ví dụ: '12g', '3 lát')")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {"name": "", "amount": None}
+        if isinstance(data, str):
+            s = data.strip()
+            return {"name": s, "amount": None}
+        if not isinstance(data, dict):
+            return {"name": str(data), "amount": None}
+        d = dict(data)
+        # Accept common alternative keys from LLM outputs.
+        if "name" not in d:
+            d["name"] = d.get("ingredient") or d.get("herb") or d.get("drug") or ""
+        if "amount" not in d:
+            d["amount"] = d.get("dose") or d.get("quantity")
+        return d
+
+
+class EndocrineFormula(BaseModel):
+    """A named formula/bài thuốc (may include an ingredients table)."""
+
+    formula_name: str = Field(..., description="Tên bài thuốc")
+    ingredients: List[EndocrineFormulaIngredient] = Field(
+        default_factory=list,
+        description="Danh sách vị thuốc/nguyên liệu kèm định lượng (nếu có)",
+    )
+    preparation: Optional[str] = Field(default=None, description="Cách sắc/chế")
+    usage_instructions: Optional[str] = Field(default=None, description="Cách dùng/liều dùng")
+    notes: Optional[str] = Field(default=None, description="Ghi chú/gia giảm")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {"formula_name": "", "ingredients": []}
+        if isinstance(data, str):
+            s = data.strip()
+            return {"formula_name": s, "ingredients": []}
+        if not isinstance(data, dict):
+            return {"formula_name": str(data), "ingredients": []}
+        d = dict(data)
+
+        # Name aliases.
+        if "formula_name" not in d:
+            d["formula_name"] = d.get("name") or d.get("prescribed_remedy") or d.get("remedy") or ""
+
+        # Ingredients can arrive as string/table; keep as best-effort structured list.
+        ing = d.get("ingredients")
+        if ing is None:
+            d["ingredients"] = []
+        elif isinstance(ing, str):
+            s = ing.strip()
+            d["ingredients"] = [{"name": s, "amount": None}] if s else []
+        elif isinstance(ing, dict):
+            d["ingredients"] = [ing]
+
+        # Optional field aliases.
+        if "usage_instructions" not in d and d.get("usage") is not None:
+            d["usage_instructions"] = d.get("usage")
+
+        return d
+
+
+class EndocrineTreatmentPattern(BaseModel):
+    """One pattern/thể bệnh inside a disease chapter."""
+
+    pattern_name: str = Field(..., description="Tên thể bệnh")
+    symptoms: Optional[str] = Field(default=None, description="Triệu chứng")
+    treatment_principle: Optional[str] = Field(default=None, description="Pháp điều trị")
+    formulas: List[EndocrineFormula] = Field(default_factory=list, description="Các bài thuốc áp dụng")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {"pattern_name": "", "formulas": []}
+        if isinstance(data, str):
+            s = data.strip()
+            return {"pattern_name": s, "formulas": []}
+        if not isinstance(data, dict):
+            return {"pattern_name": str(data), "formulas": []}
+        d = dict(data)
+        if "pattern_name" not in d:
+            d["pattern_name"] = d.get("syndrome_name") or d.get("name") or d.get("pattern") or ""
+
+        # Coerce formulas
+        f = d.get("formulas")
+        if f is None:
+            d["formulas"] = []
+        elif isinstance(f, dict):
+            d["formulas"] = [f]
+        elif isinstance(f, str):
+            s = f.strip()
+            d["formulas"] = ([{"formula_name": s, "ingredients": []}] if s else [])
+
+        return d
+
+
+class EndocrinePatternRecord(BaseModel):
+    """Pattern-level record suitable for chunk-level extraction.
+
+    Use this when the source chunk is one 'Thể ...' / 'Chứng ...' section inside a disease chapter.
+    This keeps outputs small (less truncation) while preserving formula tables.
+    """
+
+    disease_name: str = Field(..., description="Tên bệnh (chương bệnh) mà thể này thuộc về")
+    pattern_name: str = Field(..., description="Tên thể bệnh")
+    symptoms: Optional[str] = Field(default=None, description="Triệu chứng")
+    treatment_principle: Optional[str] = Field(default=None, description="Pháp điều trị")
+    formulas: List[EndocrineFormula] = Field(default_factory=list, description="Các bài thuốc liên quan")
+
+    notes: Optional[str] = Field(default=None, description="Ghi chú khác trong mục (nếu có)")
+    images: List[ImageAsset] = Field(default_factory=list, description="Ảnh liên quan trong chunk (nếu có)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {"disease_name": "", "pattern_name": "", "formulas": [], "images": []}
+        if isinstance(data, str):
+            s = data.strip()
+            return {"disease_name": "", "pattern_name": s, "formulas": [], "images": []}
+        if not isinstance(data, dict):
+            return {"disease_name": "", "pattern_name": str(data), "formulas": [], "images": []}
+        d = dict(data)
+        if "disease_name" not in d:
+            d["disease_name"] = d.get("disease") or d.get("condition") or d.get("chapter") or ""
+        if "pattern_name" not in d:
+            d["pattern_name"] = d.get("syndrome_name") or d.get("pattern") or d.get("name") or ""
+
+        # Coerce formulas/images lists
+        for key in ("formulas", "images"):
+            v = d.get(key)
+            if v is None:
+                d[key] = []
+            elif isinstance(v, dict):
+                d[key] = [v]
+            elif isinstance(v, str) and key == "formulas":
+                s = v.strip()
+                d[key] = ([{"formula_name": s, "ingredients": []}] if s else [])
+
+        return d
+
+
+class EndocrineDisease(BaseModel):
+    """A full disease chapter chunk (PHẦN THỨ HAI) from the endocrine source."""
+
+    disease_name: str = Field(..., description="Tên bệnh")
+    overview: Optional[str] = Field(default=None, description="Khái quát/định nghĩa")
+    classification: List[str] = Field(default_factory=list, description="Phân loại (nếu có)")
+    clinical_signs: Optional[str] = Field(default=None, description="Triệu chứng lâm sàng")
+    diagnosis: Optional[str] = Field(default=None, description="Chẩn đoán (nếu có)")
+    western_medicine_notes: Optional[str] = Field(default=None, description="Góc nhìn theo y học hiện đại (nếu có)")
+    tcm_view: Optional[str] = Field(default=None, description="Theo y học cổ truyền/bệnh lý (nếu có)")
+
+    patterns: List[EndocrineTreatmentPattern] = Field(
+        default_factory=list,
+        description="Các thể bệnh/biện chứng và điều trị trong chương (nếu có)",
+    )
+    experience_formulas: List[EndocrineFormula] = Field(
+        default_factory=list,
+        description="Các bài thuốc kinh nghiệm (nếu có)",
+    )
+
+    warnings: Optional[str] = Field(default=None, description="Cảnh báo/chống chỉ định (nếu có)")
+    images: List[ImageAsset] = Field(default_factory=list, description="Ảnh liên quan trong chunk (nếu có)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, data: Any):
+        if data is None:
+            return {
+                "disease_name": "",
+                "classification": [],
+                "patterns": [],
+                "experience_formulas": [],
+                "images": [],
+            }
+        if isinstance(data, str):
+            s = data.strip()
+            return {
+                "disease_name": s,
+                "classification": [],
+                "patterns": [],
+                "experience_formulas": [],
+                "images": [],
+            }
+        if not isinstance(data, dict):
+            return {
+                "disease_name": str(data),
+                "classification": [],
+                "patterns": [],
+                "experience_formulas": [],
+                "images": [],
+            }
+
+        d = dict(data)
+
+        if "disease_name" not in d:
+            d["disease_name"] = d.get("disease") or d.get("condition_name") or d.get("title") or ""
+
+        # Normalize list-ish fields
+        for key in ("classification", "patterns", "experience_formulas", "images"):
+            v = d.get(key)
+            if v is None:
+                d[key] = []
+            elif isinstance(v, dict):
+                d[key] = [v]
+            elif isinstance(v, str) and key == "classification":
+                s = v.strip()
+                d[key] = [s] if s else []
+
+        return d
+
+
+class EndocrineDocumentContent(BaseModel):
+    """Root wrapper for endocrine medicine documents."""
+    syndromes: List[EndocrineSyndrome] = Field(
+        default_factory=list,
+        description="Danh sách thể bệnh và điều trị"
+    )
+    diseases: List[EndocrineDisease] = Field(
+        default_factory=list,
+        description="Danh sách chương bệnh (PHẦN THỨ HAI) (khuyến nghị dùng thay cho syndromes)"
+    )
+    medicinal_plants: List[MedicinalPlant] = Field(
+        default_factory=list,
+        description="Danh sách cây thuốc nội tiết"
+    )
+
+
+# ============================================================================
+# SCHEMA 5: Emergency & Toxicology (Cấp cứu và Chống độc)
+# ============================================================================
+
+class EmergencyProtocol(BaseModel):
+    """Schema for medical emergency protocols and antidotes."""
+    
+    condition_name: str = Field(
+        ...,
+        description="Tên tình trạng cấp cứu (e.g., 'Rắn cắn')"
+    )
+    category: str = Field(
+        ...,
+        description="Phân loại: 'Sơ cứu', 'Hồi sức', hoặc 'Chống độc'"
+    )
+    clinical_signs: List[str] = Field(
+        default_factory=list,
+        description="Dấu hiệu, triệu chứng lâm sàng"
+    )
+    diagnostic_tests: Optional[str] = Field(
+        None,
+        description="Xét nghiệm cần thiết"
+    )
+    first_aid_steps: List[str] = Field(
+        default_factory=list,
+        description="Bước sơ cứu ban đầu"
+    )
+    professional_treatment: List[str] = Field(
+        default_factory=list,
+        description="Biện pháp điều trị chuyên sâu"
+    )
+    medications: List[str] = Field(
+        default_factory=list,
+        description="Danh sách thuốc điều trị"
+    )
+    specific_antidote: Optional[str] = Field(
+        None,
+        description="Thuốc giải độc đặc hiệu"
+    )
+    contraindications_warnings: Optional[str] = Field(
+        None,
+        description="Chống chỉ định hoặc cảnh báo"
+    )
+
+    prevention: Optional[str] = Field(
+        None,
+        description="Phòng ngừa/khuyến cáo an toàn (nếu có)",
+    )
+
+    images: List[ImageAsset] = Field(
+        default_factory=list,
+        description="Ảnh liên quan trong chunk (nếu có)",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_emergency_fields(cls, data: Any):
+        if not isinstance(data, dict):
+            return data
+
+        d = dict(data)
+
+        def _coerce_optional_str(key: str):
+            v = d.get(key)
+            if v is None:
+                return
+            if isinstance(v, list):
+                d[key] = "; ".join(str(x).strip() for x in v if str(x).strip())
+                return
+            if isinstance(v, dict):
+                d[key] = json.dumps(v, ensure_ascii=False)
+                return
+            if not isinstance(v, str):
+                d[key] = str(v)
+
+        def _coerce_required_str(key: str):
+            v = d.get(key)
+            if v is None:
+                d[key] = ""
+                return
+            if isinstance(v, list):
+                d[key] = ", ".join(str(x).strip() for x in v if str(x).strip())
+                return
+            if isinstance(v, dict):
+                d[key] = json.dumps(v, ensure_ascii=False)
+                return
+            if not isinstance(v, str):
+                d[key] = str(v)
+
+        def _coerce_list_str(key: str):
+            v = d.get(key)
+            if v is None:
+                d[key] = []
+                return
+            if isinstance(v, list):
+                return
+            if isinstance(v, str):
+                s = v.strip()
+                d[key] = [s] if s else []
+                return
+            if isinstance(v, dict):
+                d[key] = [json.dumps(v, ensure_ascii=False)]
+                return
+            d[key] = [str(v)]
+
+        _coerce_required_str("condition_name")
+        _coerce_required_str("category")
+
+        _coerce_list_str("clinical_signs")
+        _coerce_list_str("first_aid_steps")
+        _coerce_list_str("professional_treatment")
+        _coerce_list_str("medications")
+        # images is normally a list of objects; keep list if already list.
+        if d.get("images") is None:
+            d["images"] = []
+
+        _coerce_optional_str("diagnostic_tests")
+        _coerce_optional_str("specific_antidote")
+        _coerce_optional_str("contraindications_warnings")
+        _coerce_optional_str("prevention")
+
+        return d
+
+
+class EmergencyDocumentContent(BaseModel):
+    """Root wrapper for emergency documents."""
+    protocols: List[EmergencyProtocol] = Field(
+        ...,
+        description="Danh sách các quy trình y tế cấp cứu"
+    )
+
+
+# ============================================================================
+# UNIFIED DOCUMENT TYPE UNION (for flexible routing)
+# ============================================================================
+
+DocumentType = DocumentContent | VegetableDocumentContent | EndocrineDocumentContent | EmergencyDocumentContent

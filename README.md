@@ -1,154 +1,122 @@
-## Self-host LLM on Google Colab (T4) + connect from Windows
+# Traditional Medicine Chatbot (RAG) + OCR utilities
 
-This repo supports a simple "remote LLM" mode: the chatbot calls a small HTTP server (running on Colab) at `LLM_API_BASE`.
-### 1) Start the Colab server
+This repo contains:
+- A RAG chatbot under `code/chatbot/` that can answer questions using:
+  - **Groq** (cloud) via `GROQ_API_KEY`, OR
+  - A **self-hosted LLM** running on **Google Colab** exposed via **ngrok** (`LLM_API_BASE`).
+- An OCR / PDF conversion pipeline under `code/ocr/`.
 
-- Open and run: `colab_llm_server.ipynb`
-- Wait until `/health` returns 200 and ngrok prints:
-  - `LLM_API_BASE = https://<...>.ngrok-free.app`
-The Colab server exposes:
+## Quick start (chatbot)
+
+### 0) Install dependencies
+
+From the repo root:
+
+```powershell
+py -m pip install --upgrade pip
+py -m pip install -r requirements.txt
+```
+
+### 1) Choose an LLM backend (required)
+
+You must choose **one** backend:
+
+#### Option A (self-hosted, recommended for no rate limits): Colab + ngrok
+
+Before you run **either** `query` or the webapp, you must:
+1) Start the Colab server (see the **Self-host LLM on Google Colab (T4) + ngrok** section below)
+2) Copy the printed `LLM_API_BASE`
+3) Set `LLM_API_BASE` locally (repo-root `.env` is recommended)
+
+#### Option B (cloud): Groq
+
+1) Get a Groq key: https://console.groq.com/keys
+2) Set `GROQ_API_KEY` locally
+
+### 2) Configure `.env` (recommended)
+
+Copy `.env.example` to `.env` at the repo root and fill in either **Groq** or **Colab/ngrok** values:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Notes:
+- `.env` is ignored by git (`.gitignore` includes it). Do not commit secrets.
+
+### 3) Run a query from the CLI
+
+From the repo root:
+
+```powershell
+py code\chatbot\main.py query --backend disk --persist-dir code\chatbot\vector_data --question "Cây X có tác dụng gì?"
+```
+
+LLM selection rules:
+- If `LLM_API_BASE` is set, the CLI uses the remote Colab/ngrok LLM.
+- Otherwise it uses Groq and requires `GROQ_API_KEY`.
+
+### 4) Start the webapp (FastAPI)
+
+Run from the `code/chatbot` folder:
+
+```powershell
+cd code\chatbot
+py -m uvicorn webapp:app --reload --host 0.0.0.0 --port 8000
+```
+
+Open:
+- UI: http://localhost:8000/
+- API: `POST http://localhost:8000/api/query` with JSON `{ "question": "..." }`
+
+## Self-host LLM on Google Colab (T4) + ngrok (do this first if using `LLM_API_BASE`)
+
+The remote server is implemented in `code/chatbot/scripts/colab_llm_server.py` and wrapped by `colab_llm_server.ipynb`.
+
+### 1) Get an ngrok auth token
+
+1. Create/login to an ngrok account.
+2. Copy your auth token from: https://dashboard.ngrok.com/get-started/your-authtoken
+
+In Colab:
+- Add it as a Secret named **`NGROK_TOKEN`** (Notebook UI: “Secrets”).
+
+### 2) Start the Colab server
+
+1. Open `colab_llm_server.ipynb` in Colab.
+2. Run all cells.
+3. Wait until the notebook prints something like:
+
+```
+LLM_API_BASE = https://xxxx.ngrok-free.app
+```
+
+The server exposes:
 - `GET /health`
 - `POST /v1/complete` with JSON `{ "prompt": "...", "max_new_tokens": 1024, "temperature": 0.0 }`
-### 2) Configure your local app to use the remote LLM
 
-In Windows PowerShell:
+### 3) Use `LLM_API_BASE` locally
+
+Set `LLM_API_BASE` in your repo-root `.env` (recommended) or in PowerShell:
 
 ```powershell
 $env:LLM_API_BASE = "https://<paste-from-colab>"
-# Optional: if you set LLM_API_KEY in Colab, set the same token locally
+# Optional auth, only if you enabled it in Colab:
 # $env:LLM_API_KEY = "my-secret-token"
-### 3) Ask a question via the router
+```
+
+`LLM_API_BASE` is simply the ngrok public URL that forwards to the Colab server running on `127.0.0.1:8000`.
+
+## OCR / PDF conversion pipeline
+
+The OCR pipeline lives under `code/ocr/`.
 
 ```powershell
-python chatbot/main.py query --persist-dir vector_data --backend disk --question "Cây X có tác dụng gì?"
-```
-Or run the web UI:
+cd code\ocr
+py -m pip install -r requirements.txt
 
-```powershell
-uvicorn chatbot.webapp:app --reload
-```
-
-### Tuning the RAGAS evaluation scripts
-
-Both `chatbot/evaluate_proposed.py` and `baseline_rag/evaluate.py` declare `RUN_CONFIG_SETTINGS` at the top of each file. Edit that dictionary directly if you want to raise `timeout`, increase `max_workers`, or tweak the retry behavior before rerunning the script. (Defaults: `max_workers=1`, `timeout=600`, `max_retries=3`, `max_wait=60`.)
-
-After editing, rerun either script normally:
-
-```powershell
-python chatbot/evaluate_proposed.py
+# Put a PDF somewhere and run:
+py main.py --input "path\to\file.pdf" --output .\output --mode auto
 ```
 
-# Document OCR & Conversion Pipeline
-
-This repository provides a modern pipeline for converting PDF documents to Word format using state-of-the-art OCR techniques. It supports both scanned and digital PDFs, leveraging marker-pdf for Vietnamese text recognition with superior accuracy.
-
-## Features
-- Automatic detection of PDF type (scanned vs. digital)
-- OCR for scanned documents using **marker-pdf** (modern, Vietnamese-optimized)
-- Direct conversion for digital PDFs
-- Automatic extraction of images and formulas to separate directory
-- Image placeholders in output documents
-- Preserves tables and maintains reading order
-- Treats formulas as images (no complex math rendering)
-- Outputs clean markdown and Word documents
-
-## Prerequisites
-- **Operating System:** Windows (recommended)
-- **Python Version:** Python 3.10+ (64-bit, via Conda)
-- **Hardware:** CPU (GPU auto-detected if available for faster processing)
-- **Conda:** [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/products/distribution)
-
-## Setup Instructions
-
-### 1. Install Conda
-Download and install [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/products/distribution) for Windows.
-
-### 2. Create a Conda Environment (Recommended)
-Using a Conda environment with Python 3.10+ ensures better compatibility with modern libraries.
-
-Open PowerShell and run:
-
-```powershell
-# Navigate to the project directory
-cd "C:\Users\Admin\Documents\23CLCT2_TraditionalMedicineChatbot\ocr"
-
-# Create a new conda environment named 'ocr-env' with Python 3.10
-conda create -n ocr-env python=3.10 -y
-
-# Activate the environment
-conda activate ocr-env
-```
-
-### 3. Install Required Packages
-With the conda environment activated, install all dependencies:
-
-```powershell
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-> **Note:** marker-pdf will automatically download required models on first use. This may take a few minutes.
-
-### 4. Configuration (Optional)
-You can customize input/output directories and other settings in `config.py`.
-
-Example `config.py`:
-```python
-INPUT_DIR = "./input"
-OUTPUT_DIR = "./output"
-EXTRACT_IMAGES = True  # Extract images/formulas to temp/extracted_images/
-EXTRACT_TABLES = True  # Preserve table structure
-```
-
-### 5. Running the Pipeline
-Run the pipeline from the `ocr` directory with the conda environment activated:
-
-```powershell
-python main.py --input "path/to/your.pdf"
-```
-
-#### Common Arguments
-- `--input`: Path to a single PDF file (required unless set in `config.py`)
-- `--output`: Output directory (default: `./output`)
-- `--mode`: `auto` (default), `scan`, or `digital`
-- `--batch`: Process all PDFs in input directory
-
-**Example:**
-```powershell
-python main.py --input "input/sample.pdf" --output "output" --mode auto
-```
-
-**Batch Processing:**
-```powershell
-python main.py --input "input" --batch
-```
-
-### 6. Output Structure
-After processing, you'll find:
-- **Word document** (`.docx`): In the output directory
-- **Markdown file** (`.md`): In the output directory (intermediate format)
-- **Extracted images**: In `temp/extracted_images/` directory
-- **Image placeholders**: In the Word document showing where images were located
-
-### 7. Troubleshooting
-- If you see missing library errors, run:
-  ```powershell
-  pip install -r requirements.txt
-  ```
-- Ensure your conda environment is activated before running the script.
-- For GPU acceleration, marker-pdf will automatically detect and use CUDA if available.
-- **First run may be slow** as marker-pdf downloads models (~1-2GB).
-
-## Key Improvements
-✅ **Better Vietnamese Support**: marker-pdf is optimized for Vietnamese text  
-✅ **Formula Handling**: Automatically detects and saves formulas as images  
-✅ **Cleaner Output**: Maintains reading order without complex layout analysis  
-✅ **Table Preservation**: Keeps table structure intact  
-✅ **Image Management**: Extracts images to separate directory with placeholders  
-✅ **No Heavy Dependencies**: Removed PyTorch, PaddleOCR, viet-ocr bloat  
-
-## Acknowledgements
-- [marker-pdf](https://github.com/VikParuchuri/marker) - Modern PDF to Markdown converter
-- [python-docx](https://python-docx.readthedocs.io/) - Word document generation
-
----
+Optional configuration: edit `code/ocr/config.py` (defaults: `./input` and `./output` relative to `code/ocr`).
