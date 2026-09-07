@@ -11,7 +11,7 @@ import logging
 from dotenv import load_dotenv
 
 # Load environment variables from repo root (.env)
-load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 # LlamaIndex imports (Groq backend)
 from llama_index.core.program import LLMTextCompletionProgram

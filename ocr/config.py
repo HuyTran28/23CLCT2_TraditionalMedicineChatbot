@@ -2,10 +2,13 @@
 # Copy / edit values for your environment
 
 import logging
+from pathlib import Path
 
-# Directory Configuration (relative paths)
-INPUT_DIR = "../input"           # Input folder containing PDFs
-OUTPUT_DIR = "./ocr/output"          # Output folder for Word files
+_OCR_DIR = Path(__file__).resolve().parent
+
+# Directory Configuration (resolved relative to this file)
+INPUT_DIR = str(_OCR_DIR / "input")
+OUTPUT_DIR = str(_OCR_DIR / "output")
 
 # Processing Configuration
 AUTO_DETECT = True               # Auto-detect digital vs scanned PDFs

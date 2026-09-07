@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 
 # Load environment from .env if present (helps local dev / setx not required)
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from modules.vector_store import MedicalVectorStore
@@ -21,7 +21,7 @@ from modules.router_engine import build_router_query_engine
 app = FastAPI()
 
 # Initialize shared resources at import time (one model load)
-PERSIST_DIR = os.getenv("PERSIST_DIR", "vector_data")
+PERSIST_DIR = os.getenv("PERSIST_DIR", str(Path(__file__).resolve().parent / "vector_data"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
 EMBED_BATCH = int(os.getenv("EMBED_BATCH", "1"))
 DEVICE = os.getenv("DEVICE", "cpu")

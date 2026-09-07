@@ -1,154 +1,49 @@
-## Self-host LLM on Google Colab (T4) + connect from Windows
+# Traditional Medicine Tools
 
-This repo supports a simple "remote LLM" mode: the chatbot calls a small HTTP server (running on Colab) at `LLM_API_BASE`.
-### 1) Start the Colab server
+Repository này gồm hai tool độc lập:
 
-- Open and run: `colab_llm_server.ipynb`
-- Wait until `/health` returns 200 and ngrok prints:
-  - `LLM_API_BASE = https://<...>.ngrok-free.app`
-The Colab server exposes:
-- `GET /health`
-- `POST /v1/complete` with JSON `{ "prompt": "...", "max_new_tokens": 1024, "temperature": 0.0 }`
-### 2) Configure your local app to use the remote LLM
+1. `ocr/`: chuyển PDF sang Markdown/Word, có nhận diện PDF scan và PDF digital.
+2. `chatbot/`: xây dựng và truy vấn chatbot RAG cho dữ liệu y học cổ truyền.
 
-In Windows PowerShell:
+## Cấu trúc
 
-```powershell
-$env:LLM_API_BASE = "https://<paste-from-colab>"
-# Optional: if you set LLM_API_KEY in Colab, set the same token locally
-# $env:LLM_API_KEY = "my-secret-token"
-### 3) Ask a question via the router
+```text
+ocr/
+├── main.py, config.py
+├── src/                 # OCR, xử lý Markdown, export Word
+├── notebooks/
+├── input/               # PDF local, không commit
+└── output/              # Kết quả OCR local, không commit
 
-```powershell
-python chatbot/main.py query --persist-dir vector_data --backend disk --question "Cây X có tác dụng gì?"
-```
-Or run the web UI:
+chatbot/
+├── main.py, webapp.py
+├── modules/, schemas/   # Core RAG và schema dữ liệu
+├── scripts/, notebooks/
+├── evaluation/
+│   ├── baseline_rag/
+│   ├── proposed/
+│   ├── datasets/
+│   └── results/         # Kết quả đo theo baseline/proposed
+└── .env.example
 
-```powershell
-uvicorn chatbot.webapp:app --reload
-```
-
-### Tuning the RAGAS evaluation scripts
-
-Both `chatbot/evaluate_proposed.py` and `baseline_rag/evaluate.py` declare `RUN_CONFIG_SETTINGS` at the top of each file. Edit that dictionary directly if you want to raise `timeout`, increase `max_workers`, or tweak the retry behavior before rerunning the script. (Defaults: `max_workers=1`, `timeout=600`, `max_retries=3`, `max_wait=60`.)
-
-After editing, rerun either script normally:
-
-```powershell
-python chatbot/evaluate_proposed.py
+data/                    # Corpus dùng chung: raw Markdown và JSONL đã xử lý
 ```
 
-# Document OCR & Conversion Pipeline
-
-This repository provides a modern pipeline for converting PDF documents to Word format using state-of-the-art OCR techniques. It supports both scanned and digital PDFs, leveraging marker-pdf for Vietnamese text recognition with superior accuracy.
-
-## Features
-- Automatic detection of PDF type (scanned vs. digital)
-- OCR for scanned documents using **marker-pdf** (modern, Vietnamese-optimized)
-- Direct conversion for digital PDFs
-- Automatic extraction of images and formulas to separate directory
-- Image placeholders in output documents
-- Preserves tables and maintains reading order
-- Treats formulas as images (no complex math rendering)
-- Outputs clean markdown and Word documents
-
-## Prerequisites
-- **Operating System:** Windows (recommended)
-- **Python Version:** Python 3.10+ (64-bit, via Conda)
-- **Hardware:** CPU (GPU auto-detected if available for faster processing)
-- **Conda:** [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/products/distribution)
-
-## Setup Instructions
-
-### 1. Install Conda
-Download and install [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or [Anaconda](https://www.anaconda.com/products/distribution) for Windows.
-
-### 2. Create a Conda Environment (Recommended)
-Using a Conda environment with Python 3.10+ ensures better compatibility with modern libraries.
-
-Open PowerShell and run:
+## Cài đặt
 
 ```powershell
-# Navigate to the project directory
-cd "C:\Users\Admin\Documents\23CLCT2_TraditionalMedicineChatbot\ocr"
-
-# Create a new conda environment named 'ocr-env' with Python 3.10
-conda create -n ocr-env python=3.10 -y
-
-# Activate the environment
-conda activate ocr-env
+python -m pip install -r chatbot/requirements.txt
+python -m pip install -r ocr/requirements.txt
 ```
 
-### 3. Install Required Packages
-With the conda environment activated, install all dependencies:
+## Hướng dẫn sử dụng
 
-```powershell
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+- [OCR PDF](ocr/README.md)
+- [Chatbot RAG](chatbot/README.md)
+- [Đánh giá và kết quả đo](chatbot/evaluation/README.md)
 
-> **Note:** marker-pdf will automatically download required models on first use. This may take a few minutes.
+## Cấu hình và dữ liệu
 
-### 4. Configuration (Optional)
-You can customize input/output directories and other settings in `config.py`.
+Copy `chatbot/.env.example` thành `chatbot/.env`, sau đó điền các biến môi trường cần thiết. Không đưa API key vào source code hoặc commit.
 
-Example `config.py`:
-```python
-INPUT_DIR = "./input"
-OUTPUT_DIR = "./output"
-EXTRACT_IMAGES = True  # Extract images/formulas to temp/extracted_images/
-EXTRACT_TABLES = True  # Preserve table structure
-```
-
-### 5. Running the Pipeline
-Run the pipeline from the `ocr` directory with the conda environment activated:
-
-```powershell
-python main.py --input "path/to/your.pdf"
-```
-
-#### Common Arguments
-- `--input`: Path to a single PDF file (required unless set in `config.py`)
-- `--output`: Output directory (default: `./output`)
-- `--mode`: `auto` (default), `scan`, or `digital`
-- `--batch`: Process all PDFs in input directory
-
-**Example:**
-```powershell
-python main.py --input "input/sample.pdf" --output "output" --mode auto
-```
-
-**Batch Processing:**
-```powershell
-python main.py --input "input" --batch
-```
-
-### 6. Output Structure
-After processing, you'll find:
-- **Word document** (`.docx`): In the output directory
-- **Markdown file** (`.md`): In the output directory (intermediate format)
-- **Extracted images**: In `temp/extracted_images/` directory
-- **Image placeholders**: In the Word document showing where images were located
-
-### 7. Troubleshooting
-- If you see missing library errors, run:
-  ```powershell
-  pip install -r requirements.txt
-  ```
-- Ensure your conda environment is activated before running the script.
-- For GPU acceleration, marker-pdf will automatically detect and use CUDA if available.
-- **First run may be slow** as marker-pdf downloads models (~1-2GB).
-
-## Key Improvements
-✅ **Better Vietnamese Support**: marker-pdf is optimized for Vietnamese text  
-✅ **Formula Handling**: Automatically detects and saves formulas as images  
-✅ **Cleaner Output**: Maintains reading order without complex layout analysis  
-✅ **Table Preservation**: Keeps table structure intact  
-✅ **Image Management**: Extracts images to separate directory with placeholders  
-✅ **No Heavy Dependencies**: Removed PyTorch, PaddleOCR, viet-ocr bloat  
-
-## Acknowledgements
-- [marker-pdf](https://github.com/VikParuchuri/marker) - Modern PDF to Markdown converter
-- [python-docx](https://python-docx.readthedocs.io/) - Word document generation
-
----
+PDF, vector index, embedding, ảnh sinh ra và output chạy local đã được thêm vào `.gitignore`. Các file CSV/notebook trong `chatbot/evaluation/results/` là kết quả đo được sắp xếp để theo dõi và so sánh.

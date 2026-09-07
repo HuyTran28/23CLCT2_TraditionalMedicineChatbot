@@ -20,9 +20,11 @@ def _get_schema_by_name(name: str):
 def build_arg_parser() -> argparse.ArgumentParser:
     # Robust default paths relative to this script (chatbot/main.py)
     _root = Path(__file__).resolve().parent.parent
+    _chatbot_dir = Path(__file__).resolve().parent
     _default_input = _root / "data" / "raw"
     _default_jsonl = _root / "data" / "processed" / "extracted.jsonl"
     _default_images = _root / "data" / "processed" / "images"
+    _default_vector_dir = _chatbot_dir / "vector_data"
 
     p = argparse.ArgumentParser(description="Traditional medicine chatbot pipeline")
     sub = p.add_subparsers(dest="cmd")
@@ -46,7 +48,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ],
         help="Vector index bucket",
     )
-    ingest.add_argument("--persist-dir", default="./chroma_data", help="Chroma persistence directory")
+    ingest.add_argument("--persist-dir", default=str(_default_vector_dir), help="Vector-store persistence directory")
     ingest.add_argument("--jsonl-out", default=str(_default_jsonl), help="Extraction cache JSONL")
     ingest.add_argument("--embed-model", default="BAAI/bge-m3", help="HF embedding model")
     ingest.add_argument("--embed-batch", type=int, default=8, help="Embedding batch size (lower uses less RAM)")
@@ -92,7 +94,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--image-quality", type=int, default=80, help="Quality for webp/jpg output (1-100)")
 
     query = sub.add_parser("query", help="Ask a question; router selects the right index")
-    query.add_argument("--persist-dir", default="vector_data", help="Vector index directory (disk backend default)")
+    query.add_argument("--persist-dir", default=str(_default_vector_dir), help="Vector index directory (disk backend default)")
     query.add_argument("--backend", default="disk", choices=["disk", "chroma"], help="Vector store backend")
     query.add_argument("--chroma-prefix", default="traditional_medicine", help="Chroma collection prefix (backend=chroma)")
     query.add_argument("--embed-model", default="BAAI/bge-m3", help="HF embedding model (must match ingest)")
@@ -176,7 +178,7 @@ def cmd_query(args: argparse.Namespace) -> None:
     try:
         from dotenv import load_dotenv
 
-        load_dotenv()
+        load_dotenv(Path(__file__).resolve().parent / ".env")
     except Exception:
         pass
 
